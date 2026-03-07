@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.View
+import kotlin.math.max
 
 class VadProbView @JvmOverloads constructor(
     context: Context,
@@ -17,6 +18,8 @@ class VadProbView @JvmOverloads constructor(
     }
 
     private val probBuffer = FloatArray(BAR_COUNT)
+    private var currentColumn = 0
+    private var wrapped = false
     private var speechThreshold = 0.5f
 
     private val barPaint = Paint()
@@ -48,13 +51,20 @@ class VadProbView @JvmOverloads constructor(
 
     fun addProb(prob: Float) {
         if (playbackMode) return
-        System.arraycopy(probBuffer, 1, probBuffer, 0, BAR_COUNT - 1)
-        probBuffer[BAR_COUNT - 1] = prob
+        
+        probBuffer[currentColumn] = prob
+        currentColumn++
+        if (currentColumn >= BAR_COUNT) {
+            currentColumn = 0
+            wrapped = true
+        }
         postInvalidate()
     }
 
     fun clear() {
         probBuffer.fill(0f)
+        currentColumn = 0
+        wrapped = false
         postInvalidate()
     }
 
@@ -66,31 +76,49 @@ class VadProbView @JvmOverloads constructor(
 
         canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), bgPaint)
 
-        val barWidth = w.toFloat() / BAR_COUNT
+        // Labels margin sync with SpectrogramView
+        val labelMarginLeft = 100f
+        val plotW = w - labelMarginLeft
+        val barWidth = plotW / BAR_COUNT
 
         // Threshold line
         val threshY = h * (1f - speechThreshold)
         linePaint.color = 0x60FF6B6B.toInt()
-        canvas.drawLine(0f, threshY, w.toFloat(), threshY, linePaint)
+        canvas.drawLine(labelMarginLeft, threshY, w.toFloat(), threshY, linePaint)
 
-        // Bars
-        for (i in 0 until BAR_COUNT) {
-            val prob = probBuffer[i]
-            if (prob <= 0.001f) continue
-            val barH = prob * h
-            val left = i * barWidth
-            val right = left + barWidth
+        // Draw Bars using Circular Buffer Logic
+        if (playbackMode) {
+            // In playback, we just draw empty background or simple line
+            // since we don't store full VAD history yet.
+        } else {
+            for (i in 0 until BAR_COUNT) {
+                // Determine which buffer index to draw at this view position 'i'
+                val bufferIdx = if (!wrapped) {
+                    if (i >= currentColumn) continue
+                    i
+                } else {
+                    // When wrapped, the oldest data is at currentColumn
+                    (currentColumn + i) % BAR_COUNT
+                }
 
-            barPaint.color = if (prob >= speechThreshold) {
-                0xCCFF6B6B.toInt()  // red = speech
-            } else {
-                0x664CAF50.toInt()  // dim green = silence
+                val prob = probBuffer[bufferIdx]
+                if (prob <= 0.001f) continue
+                
+                val barH = prob * h
+                val left = labelMarginLeft + (i * barWidth)
+                val right = left + barWidth
+
+                barPaint.color = if (prob >= speechThreshold) {
+                    0xCCFF6B6B.toInt()  // red = speech
+                } else {
+                    0x664CAF50.toInt()  // dim green = silence
+                }
+                canvas.drawRect(left, h - barH, right, h.toFloat(), barPaint)
             }
-            canvas.drawRect(left, h - barH, right, h.toFloat(), barPaint)
         }
 
         if (playbackMode) {
-            val cursorX = cursorPosition * w
+            val cursorX = labelMarginLeft + (cursorPosition * plotW)
             val cursorPaint = Paint().apply {
                 color = android.graphics.Color.WHITE
                 strokeWidth = 3f

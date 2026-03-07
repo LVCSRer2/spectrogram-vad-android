@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
 import kotlin.math.*
 
@@ -18,7 +19,7 @@ class SpectrogramView @JvmOverloads constructor(
 
     companion object {
         const val MAX_COLUMNS = 300
-        private const val COLUMN_STEP = 512  // samples per column (= fftSize 512 speed)
+        private const val COLUMN_STEP = 512
     }
 
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -49,8 +50,9 @@ class SpectrogramView @JvmOverloads constructor(
     private val lock = Any()
     private var currentColumn = 0
     private var wrapped = false
+    private var totalColumnsAdded = 0L
 
-    private var sampleBuffer = ShortArray(2048) // Max FFT size
+    private var sampleBuffer = ShortArray(2048)
     private var sampleCount = 0
     private var windowCounter = 0
 
@@ -60,10 +62,14 @@ class SpectrogramView @JvmOverloads constructor(
 
     // Playback and Paging state
     private var playbackMode = false
-    private var cursorPosition = 0f // 0.0 to 1.0
     private var totalDurationMs = 0
     private var currentTimeMs = 0
+    private var viewOffsetMs = 0f // Start time of the visible 20s window
     private val WINDOW_SIZE_MS = 20000 // 20 seconds
+
+    // Touch state
+    private var isDragging = false
+    private var lastTouchX = 0f
 
     private fun makeHannWindow(n: Int) = DoubleArray(n) { i ->
         0.5 * (1.0 - cos(2.0 * PI * i / (n - 1)))
@@ -79,6 +85,7 @@ class SpectrogramView @JvmOverloads constructor(
                 offscreen.eraseColor(Color.BLACK)
                 currentColumn = 0
                 wrapped = false
+                totalColumnsAdded = 0
             }
             pixelRow = IntArray(freqBins)
             sampleBuffer = ShortArray(fftSize)
@@ -94,16 +101,21 @@ class SpectrogramView @JvmOverloads constructor(
     fun getFftSize(): Int = fftSize
 
     fun setCursorPosition(pos: Float, currentMs: Int) {
-        cursorPosition = pos.coerceIn(0f, 1f)
         currentTimeMs = currentMs
+        if (!isDragging && playbackMode) {
+            if (currentTimeMs < viewOffsetMs || currentTimeMs >= viewOffsetMs + WINDOW_SIZE_MS) {
+                viewOffsetMs = (currentTimeMs / WINDOW_SIZE_MS * WINDOW_SIZE_MS).toFloat()
+            }
+        }
         postInvalidate()
     }
 
     fun clearPlaybackMode() {
         playbackMode = false
-        cursorPosition = 0f
         totalDurationMs = 0
         currentTimeMs = 0
+        viewOffsetMs = 0f
+        totalColumnsAdded = 0
         setFftSize(fftSize)
         clear()
     }
@@ -157,31 +169,47 @@ class SpectrogramView @JvmOverloads constructor(
                         val norm = ((db - floor) / range).coerceIn(0.0, 1.0)
                         pixelRow[bins - 1 - k] = heatmapColor(norm)
                     }
-                    
                     offscreen.setPixels(pixelRow, 0, 1, col, 0, 1, bins)
                 }
             }
         }
+        viewOffsetMs = 0f
         postInvalidate()
     }
 
-    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+    override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!playbackMode || totalDurationMs <= 0) return super.onTouchEvent(event)
         
-        if (event.action == android.view.MotionEvent.ACTION_DOWN || event.action == android.view.MotionEvent.ACTION_MOVE) {
-            val labelMarginLeft = 100f
-            if (event.x < labelMarginLeft) return true
+        val labelMarginLeft = 100f
+        val plotW = width - labelMarginLeft
+        if (plotW <= 0) return true
 
-            val page = currentTimeMs / WINDOW_SIZE_MS
-            val pageStartMs = page * WINDOW_SIZE_MS
-            
-            val plotW = width - labelMarginLeft
-            val xInPlot = event.x - labelMarginLeft
-            val xFraction = (xInPlot / plotW).coerceIn(0f, 1f)
-            
-            val seekMs = pageStartMs + (xFraction * WINDOW_SIZE_MS).toInt()
-            seekListener?.onSeek(seekMs.coerceIn(0, totalDurationMs))
-            return true
+        when (event.action) {
+            MotionEvent.ACTION_DOWN -> {
+                isDragging = true
+                lastTouchX = event.x
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (isDragging) {
+                    val deltaX = event.x - lastTouchX
+                    val deltaMs = (deltaX / plotW) * WINDOW_SIZE_MS
+                    viewOffsetMs -= deltaMs
+                    viewOffsetMs = viewOffsetMs.coerceIn(0f, max(0f, (totalDurationMs - 100).toFloat()))
+                    lastTouchX = event.x
+                    postInvalidate()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (isDragging) {
+                    isDragging = false
+                    val xInPlot = (event.x - labelMarginLeft).coerceIn(0f, plotW)
+                    val seekMs = viewOffsetMs + (xInPlot / plotW * WINDOW_SIZE_MS)
+                    seekListener?.onSeek(seekMs.toInt().coerceIn(0, totalDurationMs))
+                }
+                return true
+            }
         }
         return true
     }
@@ -207,29 +235,24 @@ class SpectrogramView @JvmOverloads constructor(
             fftReal[i] = sampleBuffer[i].toDouble() * hannWindow[i]
             fftImag[i] = 0.0
         }
-
         fft(fftReal, fftImag, n)
-
         val floor = dbFloor
         val ceil = dbCeil
         val range = max(1.0, ceil - floor)
-
         for (k in 0 until bins) {
             val mag = sqrt(fftReal[k] * fftReal[k] + fftImag[k] * fftImag[k]) / n
             val db = 20.0 * log10(mag + 1e-10)
             val norm = ((db - floor) / range).coerceIn(0.0, 1.0)
             pixelRow[bins - 1 - k] = heatmapColor(norm)
         }
-
         var columnsAdded = 0
-
         if (fftSize < COLUMN_STEP) {
             windowCounter++
             if (windowCounter >= COLUMN_STEP / fftSize) {
                 windowCounter = 0
                 synchronized(lock) {
                     offscreen.setPixels(pixelRow, 0, 1, currentColumn, 0, 1, bins)
-                    currentColumn++
+                    currentColumn++; totalColumnsAdded++
                     if (currentColumn >= MAX_COLUMNS) { currentColumn = 0; wrapped = true }
                 }
                 columnsAdded = 1
@@ -239,24 +262,20 @@ class SpectrogramView @JvmOverloads constructor(
             synchronized(lock) {
                 for (c in 0 until count) {
                     offscreen.setPixels(pixelRow, 0, 1, currentColumn, 0, 1, bins)
-                    currentColumn++
+                    currentColumn++; totalColumnsAdded++
                     if (currentColumn >= MAX_COLUMNS) { currentColumn = 0; wrapped = true }
                 }
             }
             columnsAdded = count
         }
-
         if (columnsAdded > 0) postInvalidate()
         return columnsAdded
     }
 
     fun clear() {
         synchronized(lock) {
-            sampleCount = 0
-            windowCounter = 0
-            currentColumn = 0
-            wrapped = false
-            offscreen.eraseColor(Color.BLACK)
+            sampleCount = 0; windowCounter = 0; currentColumn = 0
+            totalColumnsAdded = 0; wrapped = false; offscreen.eraseColor(Color.BLACK)
         }
         postInvalidate()
     }
@@ -264,35 +283,23 @@ class SpectrogramView @JvmOverloads constructor(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(Color.BLACK)
-
-        val viewW = width
-        val viewH = height
+        val viewW = width; val viewH = height
         if (viewW == 0 || viewH == 0) return
 
-        val snapColumn: Int
-        val snapWrapped: Boolean
-        val bins: Int
+        val snapColumn: Int; val snapWrapped: Boolean; val snapTotalCols: Long; val bins: Int
         synchronized(lock) {
-            snapColumn = currentColumn
-            snapWrapped = wrapped
-            bins = freqBins
+            snapColumn = currentColumn; snapWrapped = wrapped
+            snapTotalCols = totalColumnsAdded; bins = freqBins
         }
-
         if (snapColumn == 0 && !snapWrapped && !playbackMode) return
 
-        // Space for labels
-        val labelMarginLeft = 100f
-        val labelMarginBottom = 60f
+        val labelMarginLeft = 100f; val labelMarginBottom = 60f
         val plotRect = Rect(labelMarginLeft.toInt(), 0, viewW, (viewH - labelMarginBottom).toInt())
-        val plotW = plotRect.width()
-        val plotH = plotRect.height()
+        val plotW = plotRect.width(); val plotH = plotRect.height()
 
         if (playbackMode) {
-            val page = currentTimeMs / WINDOW_SIZE_MS
-            val pageStartMs = page * WINDOW_SIZE_MS
-            
             val totalColumns = offscreen.width
-            val startCol = (pageStartMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt()
+            val startCol = (viewOffsetMs * MAX_COLUMNS / WINDOW_SIZE_MS).toInt()
             val endCol = startCol + MAX_COLUMNS
             
             val src = Rect(startCol, 0, minOf(endCol, totalColumns), bins)
@@ -300,19 +307,18 @@ class SpectrogramView @JvmOverloads constructor(
             val dst = Rect(plotRect.left, plotRect.top, plotRect.left + segmentW, plotRect.bottom)
             canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
             
-            val cursorMsInPage = currentTimeMs - pageStartMs
-            val cursorX = plotRect.left + (cursorMsInPage.toFloat() / WINDOW_SIZE_MS * plotW)
-            val cursorPaint = Paint().apply {
-                color = Color.WHITE
-                strokeWidth = 3f
+            val cursorX = plotRect.left + ((currentTimeMs - viewOffsetMs).toFloat() / WINDOW_SIZE_MS * plotW)
+            if (cursorX >= plotRect.left && cursorX <= plotRect.right) {
+                val cursorPaint = Paint().apply { color = Color.WHITE; strokeWidth = 3f }
+                canvas.drawLine(cursorX, plotRect.top.toFloat(), cursorX, plotRect.bottom.toFloat(), cursorPaint)
             }
-            canvas.drawLine(cursorX, plotRect.top.toFloat(), cursorX, plotRect.bottom.toFloat(), cursorPaint)
 
             labelPaint.textAlign = Paint.Align.CENTER
-            for (i in 0..20 step 5) {
-                val tx = plotRect.left + (i.toFloat() / 20 * plotW)
-                val timeLabel = "${(pageStartMs / 1000) + i}s"
-                canvas.drawText(timeLabel, tx, viewH - 15f, labelPaint)
+            val startLabelMs = (viewOffsetMs / 5000).toInt() * 5000
+            for (tMs in startLabelMs..(viewOffsetMs + WINDOW_SIZE_MS).toInt() step 5000) {
+                val tx = plotRect.left + ((tMs - viewOffsetMs).toFloat() / WINDOW_SIZE_MS * plotW)
+                if (tx < plotRect.left || tx > plotRect.right) continue
+                canvas.drawText("${tMs / 1000}s", tx, viewH - 15f, labelPaint)
             }
         } else {
             if (!snapWrapped) {
@@ -320,30 +326,30 @@ class SpectrogramView @JvmOverloads constructor(
                 val dst = Rect(plotRect.left, plotRect.top, plotRect.left + (snapColumn.toFloat() / MAX_COLUMNS * plotW).toInt(), plotRect.bottom)
                 canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
             } else {
-                val rightPart = MAX_COLUMNS - snapColumn
-                val leftW = (rightPart.toFloat() / MAX_COLUMNS * plotW).toInt()
-                
-                val src1 = Rect(snapColumn, 0, MAX_COLUMNS, bins)
-                val dst1 = Rect(plotRect.left, plotRect.top, plotRect.left + leftW, plotRect.bottom)
+                val rightPart = MAX_COLUMNS - snapColumn; val leftW = (rightPart.toFloat() / MAX_COLUMNS * plotW).toInt()
+                val src1 = Rect(snapColumn, 0, MAX_COLUMNS, bins); val dst1 = Rect(plotRect.left, plotRect.top, plotRect.left + leftW, plotRect.bottom)
                 canvas.drawBitmap(offscreen, src1, dst1, bitmapPaint)
-
-                val src2 = Rect(0, 0, snapColumn, bins)
-                val dst2 = Rect(plotRect.left + leftW, plotRect.top, plotRect.right, plotRect.bottom)
+                val src2 = Rect(0, 0, snapColumn, bins); val dst2 = Rect(plotRect.left + leftW, plotRect.top, plotRect.right, plotRect.bottom)
                 canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint)
             }
-
             labelPaint.textAlign = Paint.Align.CENTER
-            for (i in 0..20 step 5) {
-                val tx = plotRect.left + (i.toFloat() / 20 * plotW)
-                canvas.drawText("${i}s", tx, viewH - 15f, labelPaint)
+            val msPerColumn = WINDOW_SIZE_MS.toFloat() / MAX_COLUMNS; val totalMs = snapTotalCols * msPerColumn
+            val firstVisibleMs = max(0f, totalMs - WINDOW_SIZE_MS).toLong()
+            val startLabelMs = (firstVisibleMs / 5000 + 1) * 5000
+            for (tMs in startLabelMs..totalMs.toLong() step 5000) {
+                val colAtTime = (tMs / msPerColumn).toLong() % MAX_COLUMNS
+                var viewIndex = colAtTime - snapColumn
+                if (viewIndex < 0) viewIndex += MAX_COLUMNS
+                val drawX = plotRect.left + (viewIndex.toFloat() / MAX_COLUMNS * plotW)
+                canvas.drawText("${tMs / 1000}s", drawX, viewH - 15f, labelPaint)
+                canvas.drawLine(drawX, plotRect.bottom.toFloat(), drawX, plotRect.bottom + 10f, Paint().apply { color = Color.WHITE; strokeWidth = 2f })
             }
         }
 
         labelPaint.textAlign = Paint.Align.RIGHT
         val freqMax = sampleRate / 2
         for (i in 0..4) {
-            val freq = freqMax * i / 4
-            val ty = plotRect.bottom - (i.toFloat() / 4 * plotH)
+            val freq = freqMax * i / 4; val ty = plotRect.bottom - (i.toFloat() / 4 * plotH)
             canvas.drawText("${freq}Hz", labelMarginLeft - 10f, ty + labelPaint.textSize / 3, labelPaint)
         }
     }
@@ -356,35 +362,24 @@ class SpectrogramView @JvmOverloads constructor(
                 tr = imag[i]; imag[i] = imag[j]; imag[j] = tr
             }
             var m = n shr 1
-            while (m >= 1 && j >= m) {
-                j -= m
-                m = m shr 1
-            }
+            while (m >= 1 && j >= m) { j -= m; m = m shr 1 }
             j += m
         }
-
         var step = 2
         while (step <= n) {
-            val halfStep = step shr 1
-            val angle = -2.0 * PI / step
-            val wR = cos(angle)
-            val wI = sin(angle)
+            val halfStep = step shr 1; val angle = -2.0 * PI / step
+            val wR = cos(angle); val wI = sin(angle)
             var k = 0
             while (k < n) {
-                var curR = 1.0
-                var curI = 0.0
+                var curR = 1.0; var curI = 0.0
                 for (m2 in 0 until halfStep) {
-                    val idx1 = k + m2
-                    val idx2 = idx1 + halfStep
+                    val idx1 = k + m2; val idx2 = idx1 + halfStep
                     val tR = curR * real[idx2] - curI * imag[idx2]
                     val tI = curR * imag[idx2] + curI * real[idx2]
-                    real[idx2] = real[idx1] - tR
-                    imag[idx2] = imag[idx1] - tI
-                    real[idx1] += tR
-                    imag[idx1] += tI
+                    real[idx2] = real[idx1] - tR; imag[idx2] = imag[idx1] - tI
+                    real[idx1] += tR; imag[idx1] += tI
                     val newCurR = curR * wR - curI * wI
-                    curI = curR * wI + curI * wR
-                    curR = newCurR
+                    curI = curR * wI + curI * wR; curR = newCurR
                 }
                 k += step
             }
@@ -393,26 +388,12 @@ class SpectrogramView @JvmOverloads constructor(
     }
 
     private fun heatmapColor(v: Double): Int {
-        val r: Int
-        val g: Int
-        val b: Int
+        val r: Int; val g: Int; val b: Int
         when {
-            v < 0.25 -> {
-                val t = v / 0.25
-                r = 0; g = 0; b = (255 * t).toInt()
-            }
-            v < 0.5 -> {
-                val t = (v - 0.25) / 0.25
-                r = 0; g = (255 * t).toInt(); b = (255 * (1.0 - t)).toInt()
-            }
-            v < 0.75 -> {
-                val t = (v - 0.5) / 0.25
-                r = (255 * t).toInt(); g = 255; b = 0
-            }
-            else -> {
-                val t = (v - 0.75) / 0.25
-                r = 255; g = (255 * (1.0 - t)).toInt(); b = 0
-            }
+            v < 0.25 -> { val t = v / 0.25; r = 0; g = 0; b = (255 * t).toInt() }
+            v < 0.5 -> { val t = (v - 0.25) / 0.25; r = 0; g = (255 * t).toInt(); b = (255 * (1.0 - t)).toInt() }
+            v < 0.75 -> { val t = (v - 0.5) / 0.25; r = (255 * t).toInt(); g = 255; b = 0 }
+            else -> { val t = (v - 0.75) / 0.25; r = 255; g = (255 * (1.0 - t)).toInt(); b = 0 }
         }
         return Color.rgb(r, g, b)
     }
