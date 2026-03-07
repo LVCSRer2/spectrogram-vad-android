@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
@@ -94,7 +95,7 @@
             android:tint="#FFAAAAAA" />
     </LinearLayout>
 
-    <!-- Playback controls (initially hidden) -->
+    <!-- Playback controls -->
     <LinearLayout
         android:id="@+id/playbackLayout"
         android:layout_width="match_parent"
@@ -148,12 +149,67 @@
             android:tint="#FFAAAAAA" />
     </LinearLayout>
 
-    <!-- Spectrogram -->
-    <com.example.spectrogramvad.SpectrogramView
-        android:id="@+id/spectrogramView"
+    <!-- Spectrogram Container -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1">
+
+        <com.example.spectrogramvad.SpectrogramView
+            android:id="@+id/spectrogramView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Range Slider Control Overlay (Lower 50% Width on Right) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:orientation="horizontal"
+            android:baselineAligned="false">
+            
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_margin="8dp"
+                android:padding="4dp"
+                android:orientation="vertical"
+                android:background="#33000000">
+
+                <TextView
+                    android:id="@+id/tvRangeLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Range: -20~80"
+                    android:textColor="#88FFFFFF"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace"
+                    android:gravity="center" />
+
+                <com.google.android.material.slider.RangeSlider
+                    android:id="@+id/rangeSlider"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:valueFrom="-40"
+                    android:valueTo="100"
+                    android:stepSize="1"
+                    app:values="@array/initial_range_values"
+                    app:thumbColor="#88FFFFFF"
+                    app:trackColorActive="#66FFFFFF"
+                    app:trackColorInactive="#22FFFFFF"
+                    app:thumbRadius="6dp"
+                    app:haloRadius="0dp"
+                    app:haloColor="@android:color/transparent"
+                    app:labelBehavior="gone" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 
     <!-- VAD Probabilities -->
     <com.example.spectrogramvad.VadProbView

@@ -33,6 +33,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.slider.RangeSlider
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -57,6 +58,10 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private lateinit var btnPause: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvProb: TextView
+
+    // Dynamic Range Controls
+    private lateinit var rangeSlider: RangeSlider
+    private lateinit var tvRangeLabel: TextView
 
     // Bluetooth SCO
     private lateinit var audioManager: AudioManager
@@ -95,7 +100,6 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         }
     }
 
-    // Recording Service
     private var recordingService: RecordingService? = null
     private var isBound = false
     private val connection = object : ServiceConnection {
@@ -147,6 +151,9 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         tvStatus = findViewById(R.id.tvStatus)
         tvProb = findViewById(R.id.tvProb)
 
+        rangeSlider = findViewById(R.id.rangeSlider)
+        tvRangeLabel = findViewById(R.id.tvRangeLabel)
+
         playbackLayout = findViewById(R.id.playbackLayout)
         btnPlayPause = findViewById(R.id.btnPlayPause)
         playbackSeekBar = findViewById(R.id.playbackSeekBar)
@@ -162,6 +169,15 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
+
+        // RangeSlider listener
+        rangeSlider.addOnChangeListener { slider, _, _ ->
+            val values = slider.values
+            val floor = values[0]
+            val ceil = values[1]
+            tvRangeLabel.text = String.format("Dynamic Range: %.0f ~ %.0f dB", floor, ceil)
+            spectrogramView.setDbRange(floor.toDouble(), ceil.toDouble())
+        }
 
         val prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE)
         spectrogramView.setFftSize(prefs.getInt(PREF_FFT_SIZE, 256))
@@ -410,11 +426,12 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         val tempVad = SileroVad().apply { init(this@MainActivity); setSampleRate(sr) }
         try {
             FileInputStream(file).use { fis ->
-                val byteBuffer = ByteArray(SAMPLES_PER_COL * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
+                val samplesPerBar = SAMPLES_PER_COL
+                val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
                 for (i in 0 until totalBars) {
                     val read = fis.read(byteBuffer); if (read <= 0) break
                     floatBuffer.fill(0f)
-                    val samplesToProcess = minOf(tempVad.chunkSize, SAMPLES_PER_COL)
+                    val samplesToProcess = minOf(tempVad.chunkSize, samplesPerBar)
                     for (j in 0 until samplesToProcess) {
                         val s = ((byteBuffer[j * 2].toInt() and 0xFF) or (byteBuffer[j * 2 + 1].toInt() shl 8)).toShort()
                         floatBuffer[j] = (s / 32768.0f).coerceIn(-1f, 1f)
@@ -429,7 +446,8 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private fun resumePlayback() {
         val path = playbackAudioPath ?: return
         if (isPlaying) return
-        val sr = currentSampleRate; val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val sr = currentSampleRate
+        val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         audioTrack = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
             .setBufferSizeInBytes(bufSize).setTransferMode(AudioTrack.MODE_STREAM).build()
