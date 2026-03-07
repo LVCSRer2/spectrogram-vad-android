@@ -15,7 +15,6 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import java.io.DataOutputStream
 import java.io.FileOutputStream
 import java.io.File
 
@@ -36,7 +35,7 @@ class RecordingService : Service() {
     private val sileroVad = SileroVad()
 
     interface RecordingListener {
-        fun onDataRead(buffer: ShortArray, read: Int, prob: Float, columns: Int)
+        fun onDataRead(buffer: ShortArray, read: Int, prob: Float)
         fun onStateChanged(recording: Boolean, paused: Boolean)
     }
 
@@ -62,7 +61,7 @@ class RecordingService : Service() {
         this.listener = l
     }
 
-    fun startRecording(sr: Int, pcmPath: String, vadPath: String) {
+    fun startRecording(sr: Int, pcmPath: String) {
         if (isRecording) return
         this.sampleRate = sr
         sileroVad.setSampleRate(sr)
@@ -103,7 +102,6 @@ class RecordingService : Service() {
             val buffer = ShortArray(chunkSize)
             val floatBuffer = FloatArray(chunkSize)
             val pcmOutputStream = FileOutputStream(pcmPath)
-            val vadOutputStream = DataOutputStream(FileOutputStream(vadPath))
 
             try {
                 while (isRecording) {
@@ -121,20 +119,13 @@ class RecordingService : Service() {
                     }
                     pcmOutputStream.write(byteBuffer)
 
-                    // VAD and Notify
+                    // VAD
                     if (read == chunkSize) {
                         for (i in 0 until chunkSize) floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
                         val prob = sileroVad.infer(floatBuffer)
                         
-                        // We assume 512 samples per column for visualization sync
-                        // This is a simplification, ideally columns should be calculated by the View
-                        // but we need to write to VAD file here.
-                        val columns = 1 // Simplified for background
-                        for (r in 0 until columns) {
-                            vadOutputStream.writeFloat(prob)
-                        }
-                        
-                        listener?.onDataRead(buffer, read, prob, columns)
+                        // Just notify MainActivity, it will handle VAD file writing based on columns
+                        listener?.onDataRead(buffer, read, prob)
                     }
                 }
             } catch (e: Exception) {
@@ -142,7 +133,6 @@ class RecordingService : Service() {
             } finally {
                 try {
                     pcmOutputStream.flush(); pcmOutputStream.close()
-                    vadOutputStream.flush(); vadOutputStream.close()
                 } catch (ignored: Exception) {}
             }
         }, "RecordingThread")

@@ -34,6 +34,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -120,6 +121,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private var isPaused = false
     private var currentSampleRate = 8000
     private var currentRecordingName: String? = null
+    private var vadOutputStream: DataOutputStream? = null
 
     private var isPlaying = false
     private var audioTrack: AudioTrack? = null
@@ -193,7 +195,6 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         startBluetoothMic()
 
-        // Bind to service
         val intent = Intent(this, RecordingService::class.java)
         startService(intent)
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
@@ -207,12 +208,19 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         }
     }
 
-    override fun onDataRead(buffer: ShortArray, read: Int, prob: Float, columns: Int) {
+    override fun onDataRead(buffer: ShortArray, read: Int, prob: Float) {
         runOnUiThread {
+            // Actual columns rendered by SpectrogramView
             val actualCols = spectrogramView.addSamples(buffer, read)
+            
+            // Sync VAD recording with spectrogram columns
             for (r in 0 until actualCols) {
                 vadProbView.addProb(prob)
+                try {
+                    vadOutputStream?.writeFloat(prob)
+                } catch (e: Exception) {}
             }
+            
             val isSpeech = prob >= 0.5f
             tvProb.text = String.format("%.2f", prob)
             tvStatus.text = if (isSpeech) "Speech" else "Recording..."
@@ -221,6 +229,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     }
 
     override fun onStateChanged(recording: Boolean, paused: Boolean) {
+        val wasRecording = this.isRecording
         this.isRecording = recording
         this.isPaused = paused
         runOnUiThread {
@@ -235,6 +244,14 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                 btnPause.visibility = View.GONE
                 tvStatus.text = "Stopped"
                 tvStatus.setTextColor(0xFFFFFFFF.toInt())
+                
+                // Close VAD stream
+                try { vadOutputStream?.flush(); vadOutputStream?.close() } catch (e: Exception) {}
+                vadOutputStream = null
+
+                if (wasRecording) {
+                    currentRecordingName?.let { enterPlaybackMode(it) }
+                }
             }
         }
     }
@@ -315,7 +332,6 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 31) permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         if (Build.VERSION.SDK_INT >= 33) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        
         val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_REQUEST)
@@ -335,7 +351,12 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
         val pcmPath = RecordingManager.getAudioPath(this, name)
         val vadPath = RecordingManager.getVadPath(this, name)
-        recordingService?.startRecording(currentSampleRate, pcmPath, vadPath)
+        
+        try {
+            vadOutputStream = DataOutputStream(FileOutputStream(vadPath))
+        } catch (e: Exception) { e.printStackTrace() }
+
+        recordingService?.startRecording(currentSampleRate, pcmPath)
     }
 
     private fun stopRecording() {
@@ -399,7 +420,6 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         val totalDurationMs = (file.length() * 1000 / (sr * 2)).toInt()
         val totalBars = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
         val vadResults = FloatArray(totalBars)
-        // Note: SileroVad instance is now inside Service, we might need a temporary one here or use Service's
         val tempVad = SileroVad().apply { init(this@MainActivity); setSampleRate(sr) }
         try {
             FileInputStream(file).use { fis ->
