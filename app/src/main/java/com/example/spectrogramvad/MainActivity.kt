@@ -2,20 +2,21 @@ package com.example.spectrogramvad
 
 import android.Manifest
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
-import android.media.AudioRecord
 import android.media.AudioTrack
-import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.View
@@ -33,14 +34,11 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.io.DataInputStream
-import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
 
     companion object {
         private const val LOG_TAG = "MainActivity"
@@ -77,29 +75,39 @@ class MainActivity : AppCompatActivity() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
             for (device in addedDevices) {
                 if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                    Log.i(LOG_TAG, "BT SCO device added: ${device.productName}")
                     startBluetoothMic()
                     if (isRecording) {
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Bluetooth Connected. Recording from Bluetooth.", Toast.LENGTH_SHORT).show()
-                        }
+                        runOnUiThread { Toast.makeText(this@MainActivity, "Bluetooth Connected", Toast.LENGTH_SHORT).show() }
                     }
                 }
             }
         }
-
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
             for (device in removedDevices) {
                 if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-                    Log.i(LOG_TAG, "BT SCO device removed: ${device.productName}")
                     stopBluetoothMic()
                     if (isRecording) {
-                        runOnUiThread {
-                            Toast.makeText(this@MainActivity, "Bluetooth Disconnected. Recording from Phone Mic.", Toast.LENGTH_SHORT).show()
-                        }
+                        runOnUiThread { Toast.makeText(this@MainActivity, "Bluetooth Disconnected", Toast.LENGTH_SHORT).show() }
                     }
                 }
             }
+        }
+    }
+
+    // Recording Service
+    private var recordingService: RecordingService? = null
+    private var isBound = false
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as RecordingService.RecordingBinder
+            recordingService = binder.getService()
+            recordingService?.setListener(this@MainActivity)
+            isBound = true
+            updateUIFromServiceState()
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            recordingService = null
+            isBound = false
         }
     }
 
@@ -108,13 +116,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playbackSeekBar: SeekBar
     private lateinit var tvPlaybackTime: TextView
 
-    private val sileroVad = SileroVad()
-    private var audioRecord: AudioRecord? = null
-    private var recordingThread: Thread? = null
-
-    @Volatile
     private var isRecording = false
-    @Volatile
     private var isPaused = false
     private var currentSampleRate = 8000
     private var currentRecordingName: String? = null
@@ -161,7 +163,6 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE)
         spectrogramView.setFftSize(prefs.getInt(PREF_FFT_SIZE, 256))
         currentSampleRate = prefs.getInt(PREF_SAMPLE_RATE, 8000)
-        sileroVad.setSampleRate(currentSampleRate)
         spectrogramView.sampleRate = currentSampleRate
 
         findViewById<ImageButton>(R.id.btnSettings).setOnClickListener { showSettingsDialog() }
@@ -184,17 +185,58 @@ class MainActivity : AppCompatActivity() {
 
         btnPause.setOnClickListener {
             if (isRecording) {
-                isPaused = !isPaused
-                btnPause.text = if (isPaused) "RESUME" else "PAUSE"
-                tvStatus.text = if (isPaused) "Paused" else "Recording..."
+                if (isPaused) recordingService?.resumeRecording() else recordingService?.pauseRecording()
             }
         }
-
-        if (!sileroVad.init(this)) tvStatus.text = "VAD init failed"
 
         registerReceiver(scoReceiver, IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED))
         audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
         startBluetoothMic()
+
+        // Bind to service
+        val intent = Intent(this, RecordingService::class.java)
+        startService(intent)
+        bindService(intent, connection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun updateUIFromServiceState() {
+        recordingService?.let {
+            isRecording = it.isRecording()
+            isPaused = it.isPaused()
+            onStateChanged(isRecording, isPaused)
+        }
+    }
+
+    override fun onDataRead(buffer: ShortArray, read: Int, prob: Float, columns: Int) {
+        runOnUiThread {
+            val actualCols = spectrogramView.addSamples(buffer, read)
+            for (r in 0 until actualCols) {
+                vadProbView.addProb(prob)
+            }
+            val isSpeech = prob >= 0.5f
+            tvProb.text = String.format("%.2f", prob)
+            tvStatus.text = if (isSpeech) "Speech" else "Recording..."
+            tvStatus.setTextColor(if (isSpeech) 0xFFFF6B6B.toInt() else 0xFF4CAF50.toInt())
+        }
+    }
+
+    override fun onStateChanged(recording: Boolean, paused: Boolean) {
+        this.isRecording = recording
+        this.isPaused = paused
+        runOnUiThread {
+            if (recording) {
+                btnRecord.text = "STOP"
+                btnPause.visibility = View.VISIBLE
+                btnPause.text = if (paused) "RESUME" else "PAUSE"
+                tvStatus.text = if (paused) "Paused" else "Recording..."
+                if (paused) tvStatus.setTextColor(0xFFFFFFFF.toInt())
+            } else {
+                btnRecord.text = "RECORD"
+                btnPause.visibility = View.GONE
+                tvStatus.text = "Stopped"
+                tvStatus.setTextColor(0xFFFFFFFF.toInt())
+            }
+        }
     }
 
     private fun startBluetoothMic() {
@@ -215,44 +257,26 @@ class MainActivity : AppCompatActivity() {
                 audioManager.isBluetoothScoOn = true
                 bluetoothScoOn = true
             }
-        } catch (e: Exception) {
-            Log.e(LOG_TAG, "Bluetooth SCO error: ${e.message}")
-        }
+        } catch (e: Exception) { Log.e(LOG_TAG, "Bluetooth SCO error: ${e.message}") }
     }
 
     private fun stopBluetoothMic() {
         if (bluetoothScoOn) {
             try {
-                if (Build.VERSION.SDK_INT >= 31) {
-                    audioManager.clearCommunicationDevice()
-                } else {
-                    audioManager.isBluetoothScoOn = false
-                    audioManager.stopBluetoothSco()
-                    audioManager.mode = AudioManager.MODE_NORMAL
-                }
+                if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice()
+                else { audioManager.isBluetoothScoOn = false; audioManager.stopBluetoothSco(); audioManager.mode = AudioManager.MODE_NORMAL }
             } catch (e: Exception) {}
             bluetoothScoOn = false
         }
     }
 
     private fun showSettingsDialog() {
-        val view = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 32, 48, 0)
-        }
-        val srLabel = TextView(this).apply {
-            text = "Sample Rate: ${currentSampleRate}Hz"
-            setTextColor(0xFFCCCCCC.toInt()); textSize = 14f
-        }
+        val view = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 32, 48, 0) }
+        val srLabel = TextView(this).apply { text = "Sample Rate: ${currentSampleRate}Hz"; setTextColor(0xFFCCCCCC.toInt()); textSize = 14f }
         view.addView(srLabel)
-        val fftLabel = TextView(this).apply {
-            text = "\nFFT Size: ${spectrogramView.getFftSize()}"
-            setTextColor(0xFFCCCCCC.toInt()); textSize = 14f
-        }
+        val fftLabel = TextView(this).apply { text = "\nFFT Size: ${spectrogramView.getFftSize()}"; setTextColor(0xFFCCCCCC.toInt()); textSize = 14f }
         view.addView(fftLabel)
-
-        MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
-            .setTitle("Settings").setView(view)
+        MaterialAlertDialogBuilder(this, R.style.SettingsDialog).setTitle("Settings").setView(view)
             .setPositiveButton("Sample Rate") { dialog, _ -> dialog.dismiss(); showSampleRateDialog() }
             .setNeutralButton("FFT Size") { dialog, _ -> dialog.dismiss(); showFftSizeDialog() }
             .setNegativeButton("Close", null).show()
@@ -267,7 +291,6 @@ class MainActivity : AppCompatActivity() {
                 if (newRate != currentSampleRate) {
                     if (isRecording) stopRecording()
                     currentSampleRate = newRate
-                    sileroVad.setSampleRate(newRate)
                     spectrogramView.sampleRate = newRate
                     spectrogramView.clear(); vadProbView.clear()
                     getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit().putInt(PREF_SAMPLE_RATE, newRate).apply()
@@ -290,7 +313,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkPermission(): Boolean {
         val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= 31) { permissions.add(Manifest.permission.BLUETOOTH_CONNECT) }
+        if (Build.VERSION.SDK_INT >= 31) permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT >= 33) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        
         val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_REQUEST)
@@ -306,73 +331,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun startRecording() {
         stopPlayback()
-        val sr = currentSampleRate; val chunkSize = sileroVad.chunkSize
-        val bufferSize = maxOf(AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), chunkSize * 2 * 4)
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
-        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
-        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) { tvStatus.text = "AudioRecord init failed"; return }
-
-        sileroVad.reset(); spectrogramView.clear(); vadProbView.clear()
+        spectrogramView.clear(); vadProbView.clear()
         val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
         val pcmPath = RecordingManager.getAudioPath(this, name)
         val vadPath = RecordingManager.getVadPath(this, name)
-
-        isRecording = true; isPaused = false; audioRecord?.startRecording()
-        btnRecord.text = "STOP"
-        btnPause.text = "PAUSE"; btnPause.visibility = View.VISIBLE
-        tvStatus.text = "Recording... (${sr / 1000}kHz)"
-
-        recordingThread = Thread({
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
-            val buffer = ShortArray(chunkSize); val floatBuffer = FloatArray(chunkSize)
-            val pcmOutputStream = FileOutputStream(pcmPath)
-            val vadOutputStream = DataOutputStream(FileOutputStream(vadPath))
-            try {
-                while (isRecording) {
-                    val read = audioRecord?.read(buffer, 0, chunkSize) ?: 0
-                    if (read <= 0 || isPaused) continue
-                    val byteBuffer = ByteArray(read * 2)
-                    for (i in 0 until read) {
-                        byteBuffer[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
-                        byteBuffer[i * 2 + 1] = (buffer[i].toInt() shr 8).toByte()
-                    }
-                    pcmOutputStream.write(byteBuffer)
-                    val columns = spectrogramView.addSamples(buffer, read)
-                    if (read == chunkSize) {
-                        for (i in 0 until chunkSize) floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
-                        val prob = sileroVad.infer(floatBuffer)
-                        for (r in 0 until columns) {
-                            vadProbView.addProb(prob)
-                            vadOutputStream.writeFloat(prob)
-                        }
-                        val isSpeech = prob >= 0.5f
-                        runOnUiThread {
-                            tvProb.text = String.format("%.2f", prob)
-                            tvStatus.text = if (isSpeech) "Speech" else "Silence"
-                            tvStatus.setTextColor(if (isSpeech) 0xFFFF6B6B.toInt() else 0xFF4CAF50.toInt())
-                        }
-                    }
-                }
-            } catch (e: Exception) { e.printStackTrace() } finally {
-                try { pcmOutputStream.flush(); pcmOutputStream.close(); vadOutputStream.flush(); vadOutputStream.close() } catch (ignored: Exception) {}
-            }
-        }, "AudioRecordThread")
-        recordingThread?.start()
+        recordingService?.startRecording(currentSampleRate, pcmPath, vadPath)
     }
 
     private fun stopRecording() {
-        isRecording = false; isPaused = false; recordingThread?.join(1000); recordingThread = null
-        audioRecord?.stop(); audioRecord?.release(); audioRecord = null
-        btnRecord.text = "RECORD"; btnPause.visibility = View.GONE
-        tvStatus.text = "Stopped"; tvStatus.setTextColor(0xFFFFFFFF.toInt())
+        recordingService?.stopRecording()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (isBound) { unbindService(connection); isBound = false }
         try { unregisterReceiver(scoReceiver) } catch (e: Exception) {}
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
         stopBluetoothMic()
-        stopRecording(); stopPlayback(); sileroVad.release()
+        stopPlayback()
     }
 
     // --- Playback ---
@@ -419,30 +395,29 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun calculateFullVAD(file: File): FloatArray {
-        val sr = currentSampleRate; val chunkSize = sileroVad.chunkSize
-        val WINDOW_SIZE_MS = 20000; val MAX_COLUMNS = 300
+        val sr = currentSampleRate; val WINDOW_SIZE_MS = 20000; val MAX_COLUMNS = 300
         val totalDurationMs = (file.length() * 1000 / (sr * 2)).toInt()
         val totalBars = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
         val vadResults = FloatArray(totalBars)
-        sileroVad.reset()
+        // Note: SileroVad instance is now inside Service, we might need a temporary one here or use Service's
+        val tempVad = SileroVad().apply { init(this@MainActivity); setSampleRate(sr) }
         try {
             FileInputStream(file).use { fis ->
                 val samplesPerBar = (WINDOW_SIZE_MS * sr / 1000) / MAX_COLUMNS
-                val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(chunkSize)
+                val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
                 for (i in 0 until totalBars) {
-                    val read = fis.read(byteBuffer)
-                    if (read <= 0) break
+                    val read = fis.read(byteBuffer); if (read <= 0) break
                     floatBuffer.fill(0f)
-                    val samplesToProcess = minOf(chunkSize, samplesPerBar)
+                    val samplesToProcess = minOf(tempVad.chunkSize, samplesPerBar)
                     for (j in 0 until samplesToProcess) {
                         val s = ((byteBuffer[j * 2].toInt() and 0xFF) or (byteBuffer[j * 2 + 1].toInt() shl 8)).toShort()
                         floatBuffer[j] = (s / 32768.0f).coerceIn(-1f, 1f)
                     }
-                    vadResults[i] = sileroVad.infer(floatBuffer)
+                    vadResults[i] = tempVad.infer(floatBuffer)
                 }
             }
-        } catch (e: Exception) { e.printStackTrace() }
-        sileroVad.reset(); return vadResults
+        } catch (e: Exception) { e.printStackTrace() } finally { tempVad.release() }
+        return vadResults
     }
 
     private fun resumePlayback() {
