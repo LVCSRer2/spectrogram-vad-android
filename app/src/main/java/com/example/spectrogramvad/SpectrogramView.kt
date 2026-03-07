@@ -175,6 +175,7 @@ class SpectrogramView @JvmOverloads constructor(
 
     fun setCursorPosition(pos: Float, currentMs: Int) {
         currentTimeMs = currentMs
+        // Auto-scroll logic: only shift window if cursor is not in the current view
         if (playbackMode && scroller.isFinished) {
             // Auto-scroll logic: only shift window if cursor is not in the current view
             if (currentTimeMs < viewOffsetMs || currentTimeMs >= viewOffsetMs + WINDOW_SIZE_MS) {
@@ -184,6 +185,13 @@ class SpectrogramView @JvmOverloads constructor(
             }
         }
         postInvalidate()
+    }
+
+    fun setViewOffsetMs(offset: Float) {
+        if (scroller.isFinished) {
+            viewOffsetMs = offset
+            postInvalidate()
+        }
     }
 
     fun clearPlaybackMode() {

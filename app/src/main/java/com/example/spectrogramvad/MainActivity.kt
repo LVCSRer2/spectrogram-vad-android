@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
     private var playbackAudioPath: String? = null
-    private var currentPlaybackName: String? = null // For highlighting in list
+    private var currentPlaybackName: String? = null
     private var pcmFileLength: Long = 0
     private var playbackPositionBytes: Long = 0
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -107,6 +107,11 @@ class MainActivity : AppCompatActivity() {
         spectrogramView.setOnSeekListener(object : SpectrogramView.SeekListener {
             override fun onSeek(ms: Int) { seekToMs(ms) }
             override fun onOffsetChanged(offsetMs: Float) { vadProbView.setViewOffsetMs(offsetMs) }
+        })
+
+        vadProbView.setOnSeekListener(object : VadProbView.SeekListener {
+            override fun onSeek(ms: Int) { seekToMs(ms) }
+            override fun onOffsetChanged(offsetMs: Float) { spectrogramView.setViewOffsetMs(offsetMs) }
         })
 
         btnRecord.setOnClickListener {
@@ -263,7 +268,7 @@ class MainActivity : AppCompatActivity() {
         btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
 
         val fullVAD = calculateFullVAD(audioFile)
-        vadProbView.setFullVADData(fullVAD)
+        vadProbView.setFullVADData(fullVAD, durationMs)
         vadProbView.setPlaybackMode(true)
         
         val totalSamples = (pcmFileLength / 2).toInt()
@@ -413,7 +418,6 @@ class MainActivity : AppCompatActivity() {
                 val durationMs = RecordingManager.getDurationMs(this@MainActivity, name, currentSampleRate)
                 tvDuration.text = "[${formatTimeFull(durationMs.toInt())}]"
                 
-                // Highlight if currently playing
                 if (name == currentPlaybackName) {
                     view.setBackgroundColor(0x44FFFFFF.toInt())
                     tvName.setTextColor(0xFFFF6B6B.toInt())
