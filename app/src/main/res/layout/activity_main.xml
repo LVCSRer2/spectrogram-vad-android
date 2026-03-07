@@ -17,13 +17,26 @@
             android:id="@+id/btnRecord"
             android:layout_width="wrap_content"
             android:layout_height="36dp"
-            android:layout_marginEnd="16dp"
+            android:layout_marginEnd="8dp"
             android:text="RECORD"
             android:textSize="12sp"
             android:textAllCaps="true"
             android:paddingHorizontal="10dp"
             android:minWidth="0dp"
             android:minHeight="0dp" />
+
+        <Button
+            android:id="@+id/btnPause"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginEnd="8dp"
+            android:text="PAUSE"
+            android:textSize="12sp"
+            android:textAllCaps="true"
+            android:paddingHorizontal="10dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/tvStatus"

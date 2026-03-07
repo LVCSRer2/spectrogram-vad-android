@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spectrogramView: SpectrogramView
     private lateinit var vadProbView: VadProbView
     private lateinit var btnRecord: Button
+    private lateinit var btnPause: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvProb: TextView
 
@@ -56,6 +57,8 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var isRecording = false
+    @Volatile
+    private var isPaused = false
     private var currentSampleRate = 8000
     private var currentRecordingName: String? = null
 
@@ -76,6 +79,7 @@ class MainActivity : AppCompatActivity() {
         spectrogramView = findViewById(R.id.spectrogramView)
         vadProbView = findViewById(R.id.vadProbView)
         btnRecord = findViewById(R.id.btnRecord)
+        btnPause = findViewById(R.id.btnPause)
         tvStatus = findViewById(R.id.tvStatus)
         tvProb = findViewById(R.id.tvProb)
 
@@ -116,6 +120,14 @@ class MainActivity : AppCompatActivity() {
 
         btnRecord.setOnClickListener {
             if (isRecording) stopRecording() else if (checkPermission()) startRecording()
+        }
+
+        btnPause.setOnClickListener {
+            if (isRecording) {
+                isPaused = !isPaused
+                btnPause.text = if (isPaused) "RESUME" else "PAUSE"
+                tvStatus.text = if (isPaused) "Paused" else "Recording..."
+            }
         }
 
         if (!sileroVad.init(this)) tvStatus.text = "VAD init failed"
@@ -199,8 +211,9 @@ class MainActivity : AppCompatActivity() {
         val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
         val pcmPath = RecordingManager.getAudioPath(this, name)
 
-        isRecording = true; audioRecord?.startRecording()
+        isRecording = true; isPaused = false; audioRecord?.startRecording()
         btnRecord.text = "STOP"
+        btnPause.text = "PAUSE"; btnPause.visibility = View.VISIBLE
         tvStatus.text = "Recording... (${sr / 1000}kHz)"
 
         recordingThread = Thread({
@@ -210,13 +223,15 @@ class MainActivity : AppCompatActivity() {
             try {
                 while (isRecording) {
                     val read = audioRecord?.read(buffer, 0, chunkSize) ?: 0
-                    if (read <= 0) continue
+                    if (read <= 0 || isPaused) continue
+                    
                     val byteBuffer = ByteArray(read * 2)
                     for (i in 0 until read) {
                         byteBuffer[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
                         byteBuffer[i * 2 + 1] = (buffer[i].toInt() shr 8).toByte()
                     }
                     pcmOutputStream.write(byteBuffer)
+                    
                     val columns = spectrogramView.addSamples(buffer, read)
                     if (read == chunkSize) {
                         for (i in 0 until chunkSize) floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
@@ -238,9 +253,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopRecording() {
-        isRecording = false; recordingThread?.join(1000); recordingThread = null
+        isRecording = false; isPaused = false; recordingThread?.join(1000); recordingThread = null
         audioRecord?.stop(); audioRecord?.release(); audioRecord = null
-        btnRecord.text = "RECORD"; tvStatus.text = "Stopped"; tvStatus.setTextColor(0xFFFFFFFF.toInt())
+        btnRecord.text = "RECORD"; btnPause.visibility = View.GONE
+        tvStatus.text = "Stopped"; tvStatus.setTextColor(0xFFFFFFFF.toInt())
     }
 
     override fun onDestroy() {
@@ -413,11 +429,9 @@ class MainActivity : AppCompatActivity() {
                 val name = recordings[position]
                 val tvName = view.findViewById<TextView>(R.id.recordingName)
                 val tvDuration = view.findViewById<TextView>(R.id.recordingDuration)
-                
                 tvName.text = name
                 val durationMs = RecordingManager.getDurationMs(this@MainActivity, name, currentSampleRate)
                 tvDuration.text = "[${formatTimeFull(durationMs.toInt())}]"
-                
                 if (name == currentPlaybackName) {
                     view.setBackgroundColor(0x44FFFFFF.toInt())
                     tvName.setTextColor(0xFFFF6B6B.toInt())
