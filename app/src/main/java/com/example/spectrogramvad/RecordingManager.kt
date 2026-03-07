@@ -45,6 +45,10 @@ object RecordingManager {
         return File(File(getRecordingsRoot(context), name), "audio.pcm").absolutePath
     }
 
+    fun getVadPath(context: Context, name: String): String {
+        return File(File(getRecordingsRoot(context), name), "vad.bin").absolutePath
+    }
+
     fun getDurationMs(context: Context, name: String, sampleRate: Int): Long {
         val file = File(getAudioPath(context, name))
         if (!file.exists()) return 0L

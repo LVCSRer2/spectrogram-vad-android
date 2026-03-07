@@ -24,9 +24,13 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 class MainActivity : AppCompatActivity() {
 
@@ -210,6 +214,7 @@ class MainActivity : AppCompatActivity() {
         sileroVad.reset(); spectrogramView.clear(); vadProbView.clear()
         val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
         val pcmPath = RecordingManager.getAudioPath(this, name)
+        val vadPath = RecordingManager.getVadPath(this, name)
 
         isRecording = true; isPaused = false; audioRecord?.startRecording()
         btnRecord.text = "STOP"
@@ -220,6 +225,7 @@ class MainActivity : AppCompatActivity() {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
             val buffer = ShortArray(chunkSize); val floatBuffer = FloatArray(chunkSize)
             val pcmOutputStream = FileOutputStream(pcmPath)
+            val vadOutputStream = DataOutputStream(FileOutputStream(vadPath))
             try {
                 while (isRecording) {
                     val read = audioRecord?.read(buffer, 0, chunkSize) ?: 0
@@ -236,7 +242,10 @@ class MainActivity : AppCompatActivity() {
                     if (read == chunkSize) {
                         for (i in 0 until chunkSize) floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
                         val prob = sileroVad.infer(floatBuffer)
-                        for (r in 0 until columns) vadProbView.addProb(prob)
+                        for (r in 0 until columns) {
+                            vadProbView.addProb(prob)
+                            vadOutputStream.writeFloat(prob) // Pre-save VAD
+                        }
                         val isSpeech = prob >= 0.5f
                         runOnUiThread {
                             tvProb.text = String.format("%.2f", prob)
@@ -246,7 +255,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) { e.printStackTrace() } finally {
-                try { pcmOutputStream.flush(); pcmOutputStream.close() } catch (ignored: Exception) {}
+                try { 
+                    pcmOutputStream.flush(); pcmOutputStream.close()
+                    vadOutputStream.flush(); vadOutputStream.close()
+                } catch (ignored: Exception) {}
             }
         }, "AudioRecordThread")
         recordingThread?.start()
@@ -268,7 +280,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun enterPlaybackMode(recordingName: String) {
         val audioPath = RecordingManager.getAudioPath(this, recordingName)
+        val vadPath = RecordingManager.getVadPath(this, recordingName)
         val audioFile = File(audioPath)
+        val vadFile = File(vadPath)
+        
         if (!audioFile.exists()) {
             Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show()
             return
@@ -283,13 +298,39 @@ class MainActivity : AppCompatActivity() {
         updatePlaybackUI(0)
         btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
 
-        val fullVAD = calculateFullVAD(audioFile)
-        vadProbView.setFullVADData(fullVAD, durationMs)
-        vadProbView.setPlaybackMode(true)
-        
-        val totalSamples = (pcmFileLength / 2).toInt()
-        spectrogramView.setPlaybackFile(audioPath, totalSamples)
-        updateVisualizationCursor(0)
+        // Load VAD: Prefer cached file, fallback to background calc
+        if (vadFile.exists()) {
+            val cachedProbs = readVadFile(vadFile)
+            vadProbView.setFullVADData(cachedProbs, durationMs)
+            vadProbView.setPlaybackMode(true)
+            spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt())
+            updateVisualizationCursor(0)
+        } else {
+            // Background fallback for legacy files
+            tvStatus.text = "Loading VAD..."
+            Thread({
+                val calculatedProbs = calculateFullVAD(audioFile)
+                runOnUiThread {
+                    vadProbView.setFullVADData(calculatedProbs, durationMs)
+                    vadProbView.setPlaybackMode(true)
+                    spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt())
+                    updateVisualizationCursor(0)
+                    tvStatus.text = "Ready"
+                }
+            }, "VadCalcThread").start()
+        }
+    }
+
+    private fun readVadFile(file: File): FloatArray {
+        val list = mutableListOf<Float>()
+        try {
+            DataInputStream(FileInputStream(file)).use { dis ->
+                while (dis.available() > 0) {
+                    list.add(dis.readFloat())
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+        return list.toFloatArray()
     }
 
     private fun calculateFullVAD(file: File): FloatArray {
