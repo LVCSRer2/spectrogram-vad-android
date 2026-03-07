@@ -45,7 +45,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStatus: TextView
     private lateinit var tvProb: TextView
 
-    // Playback views
     private lateinit var playbackLayout: LinearLayout
     private lateinit var btnPlayPause: Button
     private lateinit var playbackSeekBar: SeekBar
@@ -60,7 +59,6 @@ class MainActivity : AppCompatActivity() {
     private var currentSampleRate = 8000
     private var currentRecordingName: String? = null
 
-    // Playback state
     private var isPlaying = false
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
@@ -80,19 +78,13 @@ class MainActivity : AppCompatActivity() {
         tvStatus = findViewById(R.id.tvStatus)
         tvProb = findViewById(R.id.tvProb)
 
-        // Playback views
         playbackLayout = findViewById(R.id.playbackLayout)
         btnPlayPause = findViewById(R.id.btnPlayPause)
         playbackSeekBar = findViewById(R.id.playbackSeekBar)
         tvPlaybackTime = findViewById(R.id.tvPlaybackTime)
 
-        btnPlayPause.setOnClickListener {
-            if (isPlaying) pausePlayback() else resumePlayback()
-        }
-
-        findViewById<ImageButton>(R.id.btnClosePlayback).setOnClickListener {
-            stopPlayback()
-        }
+        btnPlayPause.setOnClickListener { if (isPlaying) pausePlayback() else resumePlayback() }
+        findViewById<ImageButton>(R.id.btnClosePlayback).setOnClickListener { stopPlayback() }
 
         playbackSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -108,33 +100,19 @@ class MainActivity : AppCompatActivity() {
         sileroVad.setSampleRate(currentSampleRate)
         spectrogramView.sampleRate = currentSampleRate
 
-        findViewById<ImageButton>(R.id.btnSettings).setOnClickListener {
-            showSettingsDialog()
-        }
-
-        findViewById<ImageButton>(R.id.btnRecordings).setOnClickListener {
-            showRecordingsDialog()
-        }
+        findViewById<ImageButton>(R.id.btnSettings).setOnClickListener { showSettingsDialog() }
+        findViewById<ImageButton>(R.id.btnRecordings).setOnClickListener { showRecordingsDialog() }
 
         spectrogramView.setOnSeekListener(object : SpectrogramView.SeekListener {
-            override fun onSeek(ms: Int) {
-                seekToMs(ms)
-            }
+            override fun onSeek(ms: Int) { seekToMs(ms) }
+            override fun onOffsetChanged(offsetMs: Float) { vadProbView.setViewOffsetMs(offsetMs) }
         })
 
         btnRecord.setOnClickListener {
-            if (isRecording) {
-                stopRecording()
-            } else {
-                if (checkPermission()) {
-                    startRecording()
-                }
-            }
+            if (isRecording) stopRecording() else if (checkPermission()) startRecording()
         }
 
-        if (!sileroVad.init(this)) {
-            tvStatus.text = "VAD init failed"
-        }
+        if (!sileroVad.init(this)) tvStatus.text = "VAD init failed"
     }
 
     private fun showSettingsDialog() {
@@ -142,222 +120,124 @@ class MainActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 32, 48, 0)
         }
-
-        // Sample Rate section
         val srLabel = TextView(this).apply {
             text = "Sample Rate: ${currentSampleRate}Hz"
-            setTextColor(0xFFCCCCCC.toInt())
-            textSize = 14f
+            setTextColor(0xFFCCCCCC.toInt()); textSize = 14f
         }
         view.addView(srLabel)
-
-        val srLabels = SAMPLE_RATES.map { "${it / 1000}kHz" }.toTypedArray()
-        val srIdx = SAMPLE_RATES.indexOf(currentSampleRate).coerceAtLeast(0)
-
-        // FFT Size section
         val fftLabel = TextView(this).apply {
             text = "\nFFT Size: ${spectrogramView.getFftSize()}"
-            setTextColor(0xFFCCCCCC.toInt())
-            textSize = 14f
+            setTextColor(0xFFCCCCCC.toInt()); textSize = 14f
         }
         view.addView(fftLabel)
 
         MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
-            .setTitle("Settings")
-            .setView(view)
-            .setPositiveButton("Sample Rate") { dialog, _ ->
-                dialog.dismiss()
-                showSampleRateDialog()
-            }
-            .setNeutralButton("FFT Size") { dialog, _ ->
-                dialog.dismiss()
-                showFftSizeDialog()
-            }
-            .setNegativeButton("Close", null)
-            .show()
+            .setTitle("Settings").setView(view)
+            .setPositiveButton("Sample Rate") { dialog, _ -> dialog.dismiss(); showSampleRateDialog() }
+            .setNeutralButton("FFT Size") { dialog, _ -> dialog.dismiss(); showFftSizeDialog() }
+            .setNegativeButton("Close", null).show()
     }
 
     private fun showSampleRateDialog() {
         val labels = SAMPLE_RATES.map { "${it / 1000}kHz" }.toTypedArray()
         val currentIdx = SAMPLE_RATES.indexOf(currentSampleRate).coerceAtLeast(0)
-
-        MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
-            .setTitle("Sample Rate")
+        MaterialAlertDialogBuilder(this, R.style.SettingsDialog).setTitle("Sample Rate")
             .setSingleChoiceItems(labels, currentIdx) { dialog, which ->
                 val newRate = SAMPLE_RATES[which]
                 if (newRate != currentSampleRate) {
-                    val wasRecording = isRecording
-                    if (wasRecording) stopRecording()
-
+                    if (isRecording) stopRecording()
                     currentSampleRate = newRate
                     sileroVad.setSampleRate(newRate)
                     spectrogramView.sampleRate = newRate
-                    spectrogramView.clear()
-                    vadProbView.clear()
-
-                    getSharedPreferences(PREF_NAME, MODE_PRIVATE)
-                        .edit().putInt(PREF_SAMPLE_RATE, newRate).apply()
-
-                    if (wasRecording) startRecording()
+                    spectrogramView.clear(); vadProbView.clear()
+                    getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit().putInt(PREF_SAMPLE_RATE, newRate).apply()
                 }
                 dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun showFftSizeDialog() {
         val labels = FFT_SIZES.map { it.toString() }.toTypedArray()
         val currentIdx = FFT_SIZES.indexOf(spectrogramView.getFftSize()).coerceAtLeast(0)
-
-        MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
-            .setTitle("FFT Size")
+        MaterialAlertDialogBuilder(this, R.style.SettingsDialog).setTitle("FFT Size")
             .setSingleChoiceItems(labels, currentIdx) { dialog, which ->
                 val newSize = FFT_SIZES[which]
                 spectrogramView.setFftSize(newSize)
-                getSharedPreferences(PREF_NAME, MODE_PRIVATE)
-                    .edit().putInt(PREF_FFT_SIZE, newSize).apply()
+                getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit().putInt(PREF_FFT_SIZE, newSize).apply()
                 dialog.dismiss()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun checkPermission(): Boolean {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST
-            )
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST)
             return false
         }
         return true
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
-    ) {
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST && grantResults.isNotEmpty()
-            && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        ) {
-            startRecording()
-        }
+        if (requestCode == PERMISSION_REQUEST && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startRecording()
     }
 
     private fun startRecording() {
-        val sr = currentSampleRate
-        val chunkSize = sileroVad.chunkSize
+        val sr = currentSampleRate; val chunkSize = sileroVad.chunkSize
+        val bufferSize = maxOf(AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), chunkSize * 2 * 4)
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        audioRecord = AudioRecord(MediaRecorder.AudioSource.MIC, sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) { tvStatus.text = "AudioRecord init failed"; return }
 
-        val bufferSize = maxOf(
-            AudioRecord.getMinBufferSize(
-                sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-            ),
-            chunkSize * 2 * 4
-        )
-
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED
-        ) return
-
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sr,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
-
-        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-            tvStatus.text = "AudioRecord init failed"
-            return
-        }
-
-        sileroVad.reset()
-        spectrogramView.clear()
-        vadProbView.clear()
-
-        val name = RecordingManager.createRecordingDir(this)
-        currentRecordingName = name
+        sileroVad.reset(); spectrogramView.clear(); vadProbView.clear()
+        val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
         val pcmPath = RecordingManager.getAudioPath(this, name)
 
-        isRecording = true
-        audioRecord?.startRecording()
-        btnRecord.text = "Stop"
-        tvStatus.text = "Recording... (${sr / 1000}kHz)"
+        isRecording = true; audioRecord?.startRecording()
+        btnRecord.text = "Stop"; tvStatus.text = "Recording... (${sr / 1000}kHz)"
 
         recordingThread = Thread({
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
-            val buffer = ShortArray(chunkSize)
-            val floatBuffer = FloatArray(chunkSize)
+            val buffer = ShortArray(chunkSize); val floatBuffer = FloatArray(chunkSize)
             val pcmOutputStream = FileOutputStream(pcmPath)
-
             try {
                 while (isRecording) {
                     val read = audioRecord?.read(buffer, 0, chunkSize) ?: 0
                     if (read <= 0) continue
-
-                    // Save PCM
                     val byteBuffer = ByteArray(read * 2)
                     for (i in 0 until read) {
                         byteBuffer[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
                         byteBuffer[i * 2 + 1] = (buffer[i].toInt() shr 8).toByte()
                     }
                     pcmOutputStream.write(byteBuffer)
-
                     val columns = spectrogramView.addSamples(buffer, read)
-
-                if (read == chunkSize) {
-                    for (i in 0 until chunkSize) {
-                        floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
-                    }
-                    val prob = sileroVad.infer(floatBuffer)
-                    for (r in 0 until columns) {
-                        vadProbView.addProb(prob)
-                    }
-
-                    val isSpeech = prob >= 0.5f
-                    runOnUiThread {
-                        tvProb.text = String.format("%.2f", prob)
-                        tvStatus.text = if (isSpeech) "Speech" else "Silence"
-                        tvStatus.setTextColor(
-                            if (isSpeech) 0xFFFF6B6B.toInt() else 0xFF4CAF50.toInt()
-                        )
+                    if (read == chunkSize) {
+                        for (i in 0 until chunkSize) floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
+                        val prob = sileroVad.infer(floatBuffer)
+                        for (r in 0 until columns) vadProbView.addProb(prob)
+                        val isSpeech = prob >= 0.5f
+                        runOnUiThread {
+                            tvProb.text = String.format("%.2f", prob)
+                            tvStatus.text = if (isSpeech) "Speech" else "Silence"
+                            tvStatus.setTextColor(if (isSpeech) 0xFFFF6B6B.toInt() else 0xFF4CAF50.toInt())
+                        }
                     }
                 }
+            } catch (e: Exception) { e.printStackTrace() } finally {
+                try { pcmOutputStream.flush(); pcmOutputStream.close() } catch (ignored: Exception) {}
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            try {
-                pcmOutputStream.flush()
-                pcmOutputStream.close()
-            } catch (ignored: Exception) {}
-        }
-    }, "AudioRecordThread")
-    recordingThread?.start()
-}
+        }, "AudioRecordThread")
+        recordingThread?.start()
+    }
 
     private fun stopRecording() {
-        isRecording = false
-        recordingThread?.join(1000)
-        recordingThread = null
-
-        audioRecord?.stop()
-        audioRecord?.release()
-        audioRecord = null
-
-        btnRecord.text = "Start"
-        tvStatus.text = "Stopped"
-        tvStatus.setTextColor(0xFFFFFFFF.toInt())
+        isRecording = false; recordingThread?.join(1000); recordingThread = null
+        audioRecord?.stop(); audioRecord?.release(); audioRecord = null
+        btnRecord.text = "Start"; tvStatus.text = "Stopped"; tvStatus.setTextColor(0xFFFFFFFF.toInt())
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        stopRecording()
-        stopPlayback()
-        sileroVad.release()
+        stopRecording(); stopPlayback(); sileroVad.release()
     }
 
     // --- Playback ---
@@ -369,135 +249,103 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show()
             return
         }
-
-        stopRecording()
-        stopPlayback()
-
-        playbackAudioPath = audioPath
-        pcmFileLength = audioFile.length()
+        stopRecording(); stopPlayback()
+        playbackAudioPath = audioPath; pcmFileLength = audioFile.length()
         val durationMs = (pcmFileLength * 1000L / (currentSampleRate * 2)).toInt()
 
         playbackLayout.visibility = View.VISIBLE
-        playbackSeekBar.max = durationMs
-        playbackSeekBar.progress = 0
+        playbackSeekBar.max = durationMs; playbackSeekBar.progress = 0
         updatePlaybackUI(0)
+        btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
 
-        btnPlayPause.text = "Play"
-        playbackPositionBytes = 0
-        isPlaying = false
-
+        // Pre-calculate VAD data for playback
+        val fullVAD = calculateFullVAD(audioFile)
+        vadProbView.setFullVADData(fullVAD)
         vadProbView.setPlaybackMode(true)
-        // In this simple app, we don't save VAD probabilities to file, 
-        // so we just show an empty VAD view with a cursor.
-        // If we wanted to show VAD, we'd need to re-infer from file or save it during recording.
         
-        // Load full spectrogram
         val totalSamples = (pcmFileLength / 2).toInt()
-        spectrogramView.setFullSpectrogramFromFile(audioPath, totalSamples)
-        spectrogramView.setCursorPosition(0f, 0)
-        vadProbView.setCursorPosition(0f)
+        spectrogramView.setPlaybackFile(audioPath, totalSamples)
+        updateVisualizationCursor(0)
+    }
+
+    private fun calculateFullVAD(file: File): FloatArray {
+        val sr = currentSampleRate; val chunkSize = sileroVad.chunkSize
+        val WINDOW_SIZE_MS = 20000; val MAX_COLUMNS = 300
+        val totalDurationMs = (file.length() * 1000 / (sr * 2)).toInt()
+        val totalBars = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
+        val vadResults = FloatArray(totalBars)
+        
+        sileroVad.reset()
+        try {
+            FileInputStream(file).use { fis ->
+                val samplesPerBar = (WINDOW_SIZE_MS * sr / 1000) / MAX_COLUMNS
+                val byteBuffer = ByteArray(samplesPerBar * 2)
+                val floatBuffer = FloatArray(chunkSize)
+                
+                for (i in 0 until totalBars) {
+                    val read = fis.read(byteBuffer)
+                    if (read <= 0) break
+                    
+                    // Clear buffer
+                    floatBuffer.fill(0f)
+                    val samplesToProcess = minOf(chunkSize, samplesPerBar)
+                    for (j in 0 until samplesToProcess) {
+                        val s = ((byteBuffer[j * 2].toInt() and 0xFF) or (byteBuffer[j * 2 + 1].toInt() shl 8)).toShort()
+                        floatBuffer[j] = (s / 32768.0f).coerceIn(-1f, 1f)
+                    }
+                    vadResults[i] = sileroVad.infer(floatBuffer)
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+        sileroVad.reset() // Reset state for future use
+        return vadResults
     }
 
     private fun resumePlayback() {
         val path = playbackAudioPath ?: return
         if (isPlaying) return
-
         val sr = currentSampleRate
-        val bufSize = AudioTrack.getMinBufferSize(
-            sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
-        )
-
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                .build())
-            .setAudioFormat(AudioFormat.Builder()
-                .setSampleRate(sr)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .build())
-            .setBufferSizeInBytes(bufSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
-
-        audioTrack?.play()
-        isPlaying = true
-        btnPlayPause.text = "Pause"
-
+        val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        audioTrack = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            .setAudioFormat(AudioFormat.Builder().setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+            .setBufferSizeInBytes(bufSize).setTransferMode(AudioTrack.MODE_STREAM).build()
+        audioTrack?.play(); isPlaying = true; btnPlayPause.text = "Pause"
         playbackThread = Thread({
             var fis: FileInputStream? = null
             try {
-                fis = FileInputStream(path)
-                fis.skip(playbackPositionBytes)
-                
-                val buffer = ByteArray(bufSize)
-                var pos = playbackPositionBytes
-                
+                fis = FileInputStream(path); fis.skip(playbackPositionBytes)
+                val buffer = ByteArray(bufSize); var pos = playbackPositionBytes
                 while (isPlaying && pos < pcmFileLength) {
                     val toRead = minOf(buffer.size.toLong(), pcmFileLength - pos).toInt()
                     val read = fis.read(buffer, 0, toRead)
                     if (read <= 0) break
-                    
                     val written = audioTrack?.write(buffer, 0, read) ?: 0
-                    if (written > 0) {
-                        pos += written
-                        playbackPositionBytes = pos
-                    }
+                    if (written > 0) { pos += written; playbackPositionBytes = pos }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            } finally {
+            } catch (e: Exception) { e.printStackTrace() } finally {
                 fis?.close()
-                if (isPlaying && playbackPositionBytes >= pcmFileLength) {
-                    runOnUiThread {
-                        pausePlayback()
-                        seekToMs(0)
-                    }
-                }
+                if (isPlaying && playbackPositionBytes >= pcmFileLength) { runOnUiThread { pausePlayback(); seekToMs(0) } }
             }
         }, "PlaybackThread")
-        playbackThread?.start()
-        startPlaybackUpdater()
+        playbackThread?.start(); startPlaybackUpdater()
     }
 
     private fun pausePlayback() {
-        isPlaying = false
-        btnPlayPause.text = "Play"
-        stopPlaybackUpdater()
-        
-        audioTrack?.pause()
-        audioTrack?.flush()
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
-        
-        playbackThread?.join(500)
-        playbackThread = null
+        isPlaying = false; btnPlayPause.text = "Play"; stopPlaybackUpdater()
+        audioTrack?.apply { try { pause(); flush(); stop(); release() } catch (e: Exception) {} }; audioTrack = null
+        playbackThread?.join(500); playbackThread = null
     }
 
     private fun stopPlayback() {
-        pausePlayback()
-        playbackLayout.visibility = View.GONE
-        playbackAudioPath = null
-        pcmFileLength = 0
-        playbackPositionBytes = 0
-        
-        spectrogramView.clearPlaybackMode()
-        vadProbView.clearPlaybackMode()
+        pausePlayback(); playbackLayout.visibility = View.GONE; playbackAudioPath = null
+        playbackPositionBytes = 0; spectrogramView.clearPlaybackMode(); vadProbView.clearPlaybackMode()
     }
 
     private fun seekToMs(ms: Int) {
         val bytePos = (ms.toLong() * currentSampleRate * 2 / 1000) and -2L
         playbackPositionBytes = bytePos.coerceIn(0L, pcmFileLength)
-        
-        updatePlaybackUI(ms)
-        updateVisualizationCursor(ms)
-        
-        if (isPlaying) {
-            pausePlayback()
-            resumePlayback()
-        }
+        updatePlaybackUI(ms); updateVisualizationCursor(ms)
+        if (isPlaying) { pausePlayback(); resumePlayback() }
     }
 
     private fun startPlaybackUpdater() {
@@ -506,8 +354,7 @@ class MainActivity : AppCompatActivity() {
             override fun run() {
                 if (isPlaying) {
                     val ms = (playbackPositionBytes * 1000 / (currentSampleRate * 2)).toInt()
-                    updatePlaybackUI(ms)
-                    updateVisualizationCursor(ms)
+                    updatePlaybackUI(ms); updateVisualizationCursor(ms)
                     uiHandler.postDelayed(this, 50)
                 }
             }
@@ -515,10 +362,7 @@ class MainActivity : AppCompatActivity() {
         uiHandler.post(playbackUpdater!!)
     }
 
-    private fun stopPlaybackUpdater() {
-        playbackUpdater?.let { uiHandler.removeCallbacks(it) }
-        playbackUpdater = null
-    }
+    private fun stopPlaybackUpdater() { playbackUpdater?.let { uiHandler.removeCallbacks(it) }; playbackUpdater = null }
 
     private fun updateVisualizationCursor(ms: Int) {
         val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt()
@@ -529,67 +373,37 @@ class MainActivity : AppCompatActivity() {
 
     private fun updatePlaybackUI(ms: Int) {
         val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt()
-        playbackSeekBar.progress = ms
-        tvPlaybackTime.text = "${formatTime(ms)}/${formatTime(durationMs)}"
+        playbackSeekBar.progress = ms; tvPlaybackTime.text = "${formatTime(ms)}/${formatTime(durationMs)}"
     }
 
     private fun formatTime(ms: Int): String {
-        val totalSec = ms / 1000
-        val m = totalSec / 60
-        val s = totalSec % 60
+        val totalSec = ms / 1000; val m = totalSec / 60; val s = totalSec % 60
         return String.format("%02d:%02d", m, s)
     }
 
-    // --- Recordings Dialog ---
-
     private fun showRecordingsDialog() {
         val recordings = RecordingManager.listRecordings(this)
-        if (recordings.isEmpty()) {
-            Toast.makeText(this, "No recordings found", Toast.LENGTH_SHORT).show()
-            return
-        }
-
+        if (recordings.isEmpty()) { Toast.makeText(this, "No recordings found", Toast.LENGTH_SHORT).show(); return }
         val dialogView = layoutInflater.inflate(R.layout.dialog_recordings, null)
         val listView = dialogView.findViewById<ListView>(R.id.recordingsListView)
-
         val adapter = object : BaseAdapter() {
             override fun getCount(): Int = recordings.size
             override fun getItem(position: Int): Any = recordings[position]
             override fun getItemId(position: Int): Long = position.toLong()
             override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup?): View {
                 val view = convertView ?: layoutInflater.inflate(R.layout.item_recording, parent, false)
-                val name = recordings[position]
-                view.findViewById<TextView>(R.id.recordingName).text = name
+                view.findViewById<TextView>(R.id.recordingName).text = recordings[position]
                 return view
             }
         }
         listView.adapter = adapter
-
-        val dialog = AlertDialog.Builder(this, R.style.SettingsDialog)
-            .setTitle("Recordings")
-            .setView(dialogView)
-            .setNegativeButton("Close", null)
-            .create()
-
-        listView.setOnItemClickListener { _, _, position, _ ->
-            dialog.dismiss()
-            enterPlaybackMode(recordings[position])
-        }
-
+        val dialog = AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Recordings").setView(dialogView).setNegativeButton("Close", null).create()
+        listView.setOnItemClickListener { _, _, position, _ -> dialog.dismiss(); enterPlaybackMode(recordings[position]) }
         listView.setOnItemLongClickListener { _, _, position, _ ->
             val name = recordings[position]
-            AlertDialog.Builder(this, R.style.SettingsDialog)
-                .setTitle("Delete recording?")
-                .setMessage(name)
-                .setPositiveButton("Delete") { _, _ ->
-                    RecordingManager.deleteRecording(this, name)
-                    showRecordingsDialog() // refresh
-                }
-                .setNegativeButton("Cancel", null)
-                .show()
+            AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Delete recording?").setMessage(name).setPositiveButton("Delete") { _, _ -> RecordingManager.deleteRecording(this, name); showRecordingsDialog() }.setNegativeButton("Cancel", null).show()
             true
         }
-
         dialog.show()
     }
 }
