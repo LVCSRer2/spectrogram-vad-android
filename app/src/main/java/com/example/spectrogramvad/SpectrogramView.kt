@@ -7,8 +7,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.util.AttributeSet
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
+import android.widget.OverScroller
 import kotlin.math.*
 
 class SpectrogramView @JvmOverloads constructor(
@@ -64,12 +66,74 @@ class SpectrogramView @JvmOverloads constructor(
     private var playbackMode = false
     private var totalDurationMs = 0
     private var currentTimeMs = 0
-    private var viewOffsetMs = 0f // Start time of the visible 20s window
+    private var viewOffsetMs = 0f
     private val WINDOW_SIZE_MS = 20000 // 20 seconds
 
-    // Touch state
-    private var isDragging = false
-    private var lastTouchX = 0f
+    // Scrolling & Fling
+    private val scroller = OverScroller(context)
+    private val gestureDetector: GestureDetector
+
+    init {
+        gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean {
+                scroller.forceFinished(true)
+                return true
+            }
+
+            override fun onScroll(e1: MotionEvent?, e2: MotionEvent, distanceX: Float, distanceY: Float): Boolean {
+                if (!playbackMode || totalDurationMs <= 0) return false
+                val labelMarginLeft = 100f
+                val plotW = width - labelMarginLeft
+                if (plotW <= 0) return false
+
+                val deltaMs = (distanceX / plotW) * WINDOW_SIZE_MS
+                viewOffsetMs += deltaMs
+                clampViewOffset()
+                postInvalidateOnAnimation()
+                return true
+            }
+
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+                if (!playbackMode || totalDurationMs <= 0) return false
+                val labelMarginLeft = 100f
+                val plotW = width - labelMarginLeft
+                
+                // Velocity is in pixels/sec. Convert to MS/sec units for scroller.
+                // We use pixel-based fling and convert in computeScroll
+                scroller.fling(
+                    viewOffsetMs.toInt(), 0,
+                    (-velocityX * WINDOW_SIZE_MS / plotW).toInt(), 0,
+                    0, max(0, totalDurationMs - 100), 0, 0
+                )
+                postInvalidateOnAnimation()
+                return true
+            }
+
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                if (!playbackMode || totalDurationMs <= 0) return false
+                val labelMarginLeft = 100f
+                val plotW = width - labelMarginLeft
+                if (e.x < labelMarginLeft) return false
+
+                val xInPlot = e.x - labelMarginLeft
+                val seekMs = viewOffsetMs + (xInPlot / plotW * WINDOW_SIZE_MS)
+                seekListener?.onSeek(seekMs.toInt().coerceIn(0, totalDurationMs))
+                return true
+            }
+        })
+    }
+
+    private fun clampViewOffset() {
+        viewOffsetMs = viewOffsetMs.coerceIn(0f, max(0f, (totalDurationMs - 100).toFloat()))
+    }
+
+    override fun computeScroll() {
+        if (scroller.computeScrollOffset()) {
+            viewOffsetMs = scroller.currX.toFloat()
+            clampViewOffset()
+            postInvalidateOnAnimation()
+        }
+    }
 
     private fun makeHannWindow(n: Int) = DoubleArray(n) { i ->
         0.5 * (1.0 - cos(2.0 * PI * i / (n - 1)))
@@ -102,7 +166,8 @@ class SpectrogramView @JvmOverloads constructor(
 
     fun setCursorPosition(pos: Float, currentMs: Int) {
         currentTimeMs = currentMs
-        if (!isDragging && playbackMode) {
+        // Auto-paging only when not scrolling/flinging
+        if (playbackMode && scroller.isFinished) {
             if (currentTimeMs < viewOffsetMs || currentTimeMs >= viewOffsetMs + WINDOW_SIZE_MS) {
                 viewOffsetMs = (currentTimeMs / WINDOW_SIZE_MS * WINDOW_SIZE_MS).toFloat()
             }
@@ -116,6 +181,7 @@ class SpectrogramView @JvmOverloads constructor(
         currentTimeMs = 0
         viewOffsetMs = 0f
         totalColumnsAdded = 0
+        scroller.forceFinished(true)
         setFftSize(fftSize)
         clear()
     }
@@ -143,14 +209,12 @@ class SpectrogramView @JvmOverloads constructor(
                 for (col in 0 until totalColumns) {
                     val read = fis.read(byteBuffer)
                     if (read <= 0) break
-                    
                     val samplesToProcess = minOf(fftSize, samplesPerColumn)
                     for (i in 0 until samplesToProcess) {
                         val s = ((byteBuffer[i * 2].toInt() and 0xFF) or (byteBuffer[i * 2 + 1].toInt() shl 8)).toShort()
                         shortBuffer[i] = s
                     }
                     for (i in samplesToProcess until fftSize) shortBuffer[i] = 0
-
                     val n = fftSize
                     val bins = freqBins
                     for (i in 0 until n) {
@@ -158,11 +222,9 @@ class SpectrogramView @JvmOverloads constructor(
                         fftImag[i] = 0.0
                     }
                     fft(fftReal, fftImag, n)
-                    
                     val floor = dbFloor
                     val ceil = dbCeil
                     val range = max(1.0, ceil - floor)
-
                     for (k in 0 until bins) {
                         val mag = sqrt(fftReal[k] * fftReal[k] + fftImag[k] * fftImag[k]) / n
                         val db = 20.0 * log10(mag + 1e-10)
@@ -180,38 +242,18 @@ class SpectrogramView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!playbackMode || totalDurationMs <= 0) return super.onTouchEvent(event)
         
-        val labelMarginLeft = 100f
-        val plotW = width - labelMarginLeft
-        if (plotW <= 0) return true
-
-        when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                isDragging = true
-                lastTouchX = event.x
-                return true
-            }
-            MotionEvent.ACTION_MOVE -> {
-                if (isDragging) {
-                    val deltaX = event.x - lastTouchX
-                    val deltaMs = (deltaX / plotW) * WINDOW_SIZE_MS
-                    viewOffsetMs -= deltaMs
-                    viewOffsetMs = viewOffsetMs.coerceIn(0f, max(0f, (totalDurationMs - 100).toFloat()))
-                    lastTouchX = event.x
-                    postInvalidate()
-                }
-                return true
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (isDragging) {
-                    isDragging = false
-                    val xInPlot = (event.x - labelMarginLeft).coerceIn(0f, plotW)
-                    val seekMs = viewOffsetMs + (xInPlot / plotW * WINDOW_SIZE_MS)
-                    seekListener?.onSeek(seekMs.toInt().coerceIn(0, totalDurationMs))
-                }
-                return true
-            }
+        val handled = gestureDetector.onTouchEvent(event)
+        
+        if (event.action == MotionEvent.ACTION_UP && scroller.isFinished) {
+            // Seek if we just did a drag without fling
+            val labelMarginLeft = 100f
+            val plotW = width - labelMarginLeft
+            val xInPlot = (event.x - labelMarginLeft).coerceIn(0f, plotW)
+            val seekMs = viewOffsetMs + (xInPlot / plotW * WINDOW_SIZE_MS)
+            seekListener?.onSeek(seekMs.toInt().coerceIn(0, totalDurationMs))
         }
-        return true
+        
+        return handled || true
     }
 
     fun addSamples(samples: ShortArray, length: Int): Int {
@@ -236,13 +278,10 @@ class SpectrogramView @JvmOverloads constructor(
             fftImag[i] = 0.0
         }
         fft(fftReal, fftImag, n)
-        val floor = dbFloor
-        val ceil = dbCeil
-        val range = max(1.0, ceil - floor)
+        val floor = dbFloor; val ceil = dbCeil; val range = max(1.0, ceil - floor)
         for (k in 0 until bins) {
             val mag = sqrt(fftReal[k] * fftReal[k] + fftImag[k] * fftImag[k]) / n
-            val db = 20.0 * log10(mag + 1e-10)
-            val norm = ((db - floor) / range).coerceIn(0.0, 1.0)
+            val db = 20.0 * log10(mag + 1e-10); val norm = ((db - floor) / range).coerceIn(0.0, 1.0)
             pixelRow[bins - 1 - k] = heatmapColor(norm)
         }
         var columnsAdded = 0
@@ -301,7 +340,6 @@ class SpectrogramView @JvmOverloads constructor(
             val totalColumns = offscreen.width
             val startCol = (viewOffsetMs * MAX_COLUMNS / WINDOW_SIZE_MS).toInt()
             val endCol = startCol + MAX_COLUMNS
-            
             val src = Rect(startCol, 0, minOf(endCol, totalColumns), bins)
             val segmentW = (src.width().toFloat() / MAX_COLUMNS * plotW).toInt()
             val dst = Rect(plotRect.left, plotRect.top, plotRect.left + segmentW, plotRect.bottom)
@@ -345,7 +383,6 @@ class SpectrogramView @JvmOverloads constructor(
                 canvas.drawLine(drawX, plotRect.bottom.toFloat(), drawX, plotRect.bottom + 10f, Paint().apply { color = Color.WHITE; strokeWidth = 2f })
             }
         }
-
         labelPaint.textAlign = Paint.Align.RIGHT
         val freqMax = sampleRate / 2
         for (i in 0..4) {
