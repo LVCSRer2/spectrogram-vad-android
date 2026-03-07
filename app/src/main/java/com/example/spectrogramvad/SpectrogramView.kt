@@ -368,10 +368,12 @@ class SpectrogramView @JvmOverloads constructor(
             snapTotalCols = totalColumnsAdded; bins = freqBins
         }
         if (snapColumn == 0 && !snapWrapped && !playbackMode) return
-
-        val labelMarginLeft = 100f; val labelMarginBottom = 60f
-        val plotRect = Rect(labelMarginLeft.toInt(), 0, viewW, (viewH - labelMarginBottom).toInt())
-        val plotW = plotRect.width(); val plotH = plotRect.height()
+// Space for labels
+val labelMarginLeft = 100f
+val labelMarginTop = 30f
+val labelMarginBottom = 60f
+val plotRect = Rect(labelMarginLeft.toInt(), labelMarginTop.toInt(), viewW, (viewH - labelMarginBottom).toInt())
+val plotW = plotRect.width(); val plotH = plotRect.height()
 
         if (playbackMode) {
             val dst = Rect(plotRect.left, plotRect.top, plotRect.right, plotRect.bottom)
