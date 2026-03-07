@@ -170,6 +170,7 @@ class MainActivity : AppCompatActivity() {
         spectrogramView.setOnSeekListener(object : SpectrogramView.SeekListener {
             override fun onSeek(ms: Int) { seekToMs(ms) }
             override fun onOffsetChanged(offsetMs: Float) { vadProbView.setViewOffsetMs(offsetMs) }
+            override fun onZoomChanged(windowSizeMs: Int) { vadProbView.setWindowSizeMs(windowSizeMs) }
         })
 
         vadProbView.setOnSeekListener(object : VadProbView.SeekListener {
@@ -208,7 +209,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-            // Legacy path
             if (audioManager.isBluetoothScoAvailableOffCall) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
                 audioManager.startBluetoothSco()
@@ -290,14 +290,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun checkPermission(): Boolean {
         val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= 31) {
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
-        
-        val missing = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        
+        if (Build.VERSION.SDK_INT >= 31) { permissions.add(Manifest.permission.BLUETOOTH_CONNECT) }
+        val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_REQUEST)
             return false
@@ -337,14 +331,12 @@ class MainActivity : AppCompatActivity() {
                 while (isRecording) {
                     val read = audioRecord?.read(buffer, 0, chunkSize) ?: 0
                     if (read <= 0 || isPaused) continue
-                    
                     val byteBuffer = ByteArray(read * 2)
                     for (i in 0 until read) {
                         byteBuffer[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
                         byteBuffer[i * 2 + 1] = (buffer[i].toInt() shr 8).toByte()
                     }
                     pcmOutputStream.write(byteBuffer)
-                    
                     val columns = spectrogramView.addSamples(buffer, read)
                     if (read == chunkSize) {
                         for (i in 0 until chunkSize) floatBuffer[i] = (buffer[i] / 32768.0f).coerceIn(-1f, 1f)
@@ -362,10 +354,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) { e.printStackTrace() } finally {
-                try { 
-                    pcmOutputStream.flush(); pcmOutputStream.close()
-                    vadOutputStream.flush(); vadOutputStream.close()
-                } catch (ignored: Exception) {}
+                try { pcmOutputStream.flush(); pcmOutputStream.close(); vadOutputStream.flush(); vadOutputStream.close() } catch (ignored: Exception) {}
             }
         }, "AudioRecordThread")
         recordingThread?.start()
@@ -380,7 +369,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(scoReceiver)
+        try { unregisterReceiver(scoReceiver) } catch (e: Exception) {}
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
         stopBluetoothMic()
         stopRecording(); stopPlayback(); sileroVad.release()
@@ -391,18 +380,12 @@ class MainActivity : AppCompatActivity() {
     private fun enterPlaybackMode(recordingName: String) {
         val audioPath = RecordingManager.getAudioPath(this, recordingName)
         val vadPath = RecordingManager.getVadPath(this, recordingName)
-        val audioFile = File(audioPath)
-        val vadFile = File(vadPath)
-        
-        if (!audioFile.exists()) {
-            Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show()
-            return
-        }
+        val audioFile = File(audioPath); val vadFile = File(vadPath)
+        if (!audioFile.exists()) { Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show(); return }
         stopRecording(); stopPlayback()
         currentPlaybackName = recordingName
         playbackAudioPath = audioPath; pcmFileLength = audioFile.length()
         val durationMs = (pcmFileLength * 1000L / (currentSampleRate * 2)).toInt()
-
         playbackLayout.visibility = View.VISIBLE
         playbackSeekBar.max = durationMs; playbackSeekBar.progress = 0
         updatePlaybackUI(0)
@@ -431,13 +414,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun readVadFile(file: File): FloatArray {
         val list = mutableListOf<Float>()
-        try {
-            DataInputStream(FileInputStream(file)).use { dis ->
-                while (dis.available() > 0) {
-                    list.add(dis.readFloat())
-                }
-            }
-        } catch (e: Exception) { e.printStackTrace() }
+        try { DataInputStream(FileInputStream(file)).use { dis -> while (dis.available() > 0) list.add(dis.readFloat()) } } catch (e: Exception) { e.printStackTrace() }
         return list.toFloatArray()
     }
 
@@ -447,13 +424,11 @@ class MainActivity : AppCompatActivity() {
         val totalDurationMs = (file.length() * 1000 / (sr * 2)).toInt()
         val totalBars = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
         val vadResults = FloatArray(totalBars)
-        
         sileroVad.reset()
         try {
             FileInputStream(file).use { fis ->
                 val samplesPerBar = (WINDOW_SIZE_MS * sr / 1000) / MAX_COLUMNS
-                val byteBuffer = ByteArray(samplesPerBar * 2)
-                val floatBuffer = FloatArray(chunkSize)
+                val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(chunkSize)
                 for (i in 0 until totalBars) {
                     val read = fis.read(byteBuffer)
                     if (read <= 0) break
@@ -467,8 +442,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } catch (e: Exception) { e.printStackTrace() }
-        sileroVad.reset()
-        return vadResults
+        sileroVad.reset(); return vadResults
     }
 
     private fun resumePlayback() {
@@ -553,15 +527,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun formatTimeFull(ms: Int): String {
-        val totalSec = ms / 1000
-        val h = totalSec / 3600
-        val m = (totalSec % 3600) / 60
-        val s = totalSec % 60
-        return if (h > 0) {
-            String.format("%02d:%02d:%02d", h, m, s)
-        } else {
-            String.format("%02d:%02d", m, s)
-        }
+        val totalSec = ms / 1000; val h = totalSec / 3600; val m = (totalSec % 3600) / 60; val s = totalSec % 60
+        return if (h > 0) String.format("%02d:%02d:%02d", h, m, s) else String.format("%02d:%02d", m, s)
     }
 
     private fun showRecordingsDialog() {
@@ -595,18 +562,10 @@ class MainActivity : AppCompatActivity() {
         }
         listView.adapter = adapter
         val dialog = AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Recordings").setView(dialogView).setNegativeButton("Close", null).create()
-        listView.setOnItemClickListener { _, _, position, _ -> 
-            val selected = recordings[position]
-            dialog.dismiss()
-            enterPlaybackMode(selected) 
-        }
+        listView.setOnItemClickListener { _, _, position, _ -> dialog.dismiss(); enterPlaybackMode(recordings[position]) }
         listView.setOnItemLongClickListener { _, _, position, _ ->
             val name = recordings[position]
-            AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Delete recording?").setMessage(name).setPositiveButton("Delete") { _, _ -> 
-                if (name == currentPlaybackName) stopPlayback()
-                RecordingManager.deleteRecording(this, name)
-                showRecordingsDialog() 
-            }.setNegativeButton("Cancel", null).show()
+            AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Delete recording?").setMessage(name).setPositiveButton("Delete") { _, _ -> if (name == currentPlaybackName) stopPlayback(); RecordingManager.deleteRecording(this, name); showRecordingsDialog() }.setNegativeButton("Cancel", null).show()
             true
         }
         dialog.show()

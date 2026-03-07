@@ -30,7 +30,7 @@ class VadProbView @JvmOverloads constructor(
     private var totalDurationMs = 0
     private var viewOffsetMs = 0f
     private var currentTimeMs = 0
-    private val WINDOW_SIZE_MS = 20000
+    private var windowSizeMs = 20000
 
     private val barPaint = Paint()
     private val linePaint = Paint().apply { strokeWidth = 2f }
@@ -68,7 +68,7 @@ class VadProbView @JvmOverloads constructor(
                 val plotW = width - labelMarginLeft
                 if (plotW <= 0) return false
 
-                val deltaMs = (distanceX / plotW) * WINDOW_SIZE_MS
+                val deltaMs = (distanceX / plotW) * windowSizeMs
                 viewOffsetMs += deltaMs
                 clampViewOffset()
                 seekListener?.onOffsetChanged(viewOffsetMs)
@@ -80,11 +80,10 @@ class VadProbView @JvmOverloads constructor(
                 if (!playbackMode || totalDurationMs <= 0) return false
                 val labelMarginLeft = 100f
                 val plotW = width - labelMarginLeft
-                
-                val maxOffset = max(0, totalDurationMs - WINDOW_SIZE_MS)
+                val maxOffset = max(0, totalDurationMs - windowSizeMs)
                 scroller.fling(
                     viewOffsetMs.toInt(), 0,
-                    (-velocityX * WINDOW_SIZE_MS / plotW).toInt(), 0,
+                    (-velocityX * windowSizeMs / plotW).toInt(), 0,
                     0, maxOffset, 0, 0
                 )
                 postInvalidateOnAnimation()
@@ -97,7 +96,7 @@ class VadProbView @JvmOverloads constructor(
                 val plotW = width - labelMarginLeft
                 if (e.x < labelMarginLeft) return false
                 val xInPlot = e.x - labelMarginLeft
-                val seekMs = viewOffsetMs + (xInPlot / plotW * WINDOW_SIZE_MS)
+                val seekMs = viewOffsetMs + (xInPlot / plotW * windowSizeMs)
                 seekListener?.onSeek(seekMs.toInt().coerceIn(0, totalDurationMs))
                 return true
             }
@@ -105,7 +104,7 @@ class VadProbView @JvmOverloads constructor(
     }
 
     private fun clampViewOffset() {
-        val maxOffset = max(0f, (totalDurationMs - WINDOW_SIZE_MS).toFloat())
+        val maxOffset = max(0f, (totalDurationMs - windowSizeMs).toFloat())
         viewOffsetMs = viewOffsetMs.coerceIn(0f, maxOffset)
     }
 
@@ -125,7 +124,7 @@ class VadProbView @JvmOverloads constructor(
             val labelMarginLeft = 100f
             val plotW = width - labelMarginLeft
             val xInPlot = (event.x - labelMarginLeft).coerceIn(0f, plotW)
-            val seekMs = viewOffsetMs + (xInPlot / plotW * WINDOW_SIZE_MS)
+            val seekMs = viewOffsetMs + (xInPlot / plotW * windowSizeMs)
             seekListener?.onSeek(seekMs.toInt().coerceIn(0, totalDurationMs))
         }
         return handled || true
@@ -134,8 +133,8 @@ class VadProbView @JvmOverloads constructor(
     fun setCursorPosition(currentMs: Int) {
         this.currentTimeMs = currentMs
         if (playbackMode && scroller.isFinished) {
-            if (currentTimeMs < viewOffsetMs || currentTimeMs >= viewOffsetMs + WINDOW_SIZE_MS) {
-                viewOffsetMs = (currentTimeMs / WINDOW_SIZE_MS * WINDOW_SIZE_MS).toFloat()
+            if (currentTimeMs < viewOffsetMs || currentTimeMs >= viewOffsetMs + windowSizeMs) {
+                viewOffsetMs = (currentTimeMs / windowSizeMs * windowSizeMs).toFloat()
                 clampViewOffset()
                 seekListener?.onOffsetChanged(viewOffsetMs)
             }
@@ -150,6 +149,12 @@ class VadProbView @JvmOverloads constructor(
         }
     }
 
+    fun setWindowSizeMs(ms: Int) {
+        windowSizeMs = ms
+        clampViewOffset()
+        postInvalidate()
+    }
+
     fun setFullVADData(probs: FloatArray, totalDuration: Int) {
         playbackProbs = probs
         totalDurationMs = totalDuration
@@ -162,6 +167,7 @@ class VadProbView @JvmOverloads constructor(
         totalDurationMs = 0
         viewOffsetMs = 0f
         currentTimeMs = 0
+        windowSizeMs = 20000
         scroller.forceFinished(true)
         clear()
     }
@@ -206,14 +212,21 @@ class VadProbView @JvmOverloads constructor(
 
         if (playbackMode && playbackProbs != null) {
             val probs = playbackProbs!!
-            val msPerBar = WINDOW_SIZE_MS.toFloat() / BAR_COUNT
+            val msPerBar = 20000f / BAR_COUNT // Use recording-time resolution for data index
             val startIdx = (viewOffsetMs / msPerBar).toInt()
             
+            // During playback, we need to map data index to the current window size
+            val barsToDraw = (windowSizeMs / msPerBar).toInt()
+            val zoomFactor = windowSizeMs.toFloat() / 20000f
+            
             for (i in 0 until BAR_COUNT) {
-                val dataIdx = startIdx + i
+                // i-th bar in view corresponds to data index:
+                val dataIdx = startIdx + (i * zoomFactor).toInt()
                 if (dataIdx < 0 || dataIdx >= probs.size) continue
+                
                 val prob = probs[dataIdx]
                 if (prob <= 0.001f) continue
+                
                 val barH = prob * h
                 val left = labelMarginLeft + (i * barWidth)
                 val right = left + barWidth
@@ -221,7 +234,7 @@ class VadProbView @JvmOverloads constructor(
                 canvas.drawRect(left, h - barH, right, h.toFloat(), barPaint)
             }
             
-            val cursorX = labelMarginLeft + ((currentTimeMs - viewOffsetMs).toFloat() / WINDOW_SIZE_MS * plotW)
+            val cursorX = labelMarginLeft + ((currentTimeMs - viewOffsetMs).toFloat() / windowSizeMs * plotW)
             if (cursorX >= labelMarginLeft && cursorX <= w) {
                 val cursorPaint = Paint().apply { color = android.graphics.Color.WHITE; strokeWidth = 3f }
                 canvas.drawLine(cursorX, 0f, cursorX, h.toFloat(), cursorPaint)
