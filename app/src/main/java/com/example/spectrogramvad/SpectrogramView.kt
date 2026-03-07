@@ -105,10 +105,12 @@ class SpectrogramView @JvmOverloads constructor(
                 if (!playbackMode || totalDurationMs <= 0) return false
                 val labelMarginLeft = 100f
                 val plotW = width - labelMarginLeft
+                
+                val maxOffset = max(0, totalDurationMs - WINDOW_SIZE_MS)
                 scroller.fling(
                     viewOffsetMs.toInt(), 0,
                     (-velocityX * WINDOW_SIZE_MS / plotW).toInt(), 0,
-                    0, max(0, totalDurationMs - 100), 0, 0
+                    0, maxOffset, 0, 0
                 )
                 postInvalidateOnAnimation()
                 return true
@@ -128,7 +130,9 @@ class SpectrogramView @JvmOverloads constructor(
     }
 
     private fun clampViewOffset() {
-        viewOffsetMs = viewOffsetMs.coerceIn(0f, max(0f, (totalDurationMs - 100).toFloat()))
+        // Limit scroll so that data end is at most pinned to the right edge
+        val maxOffset = max(0f, (totalDurationMs - WINDOW_SIZE_MS).toFloat())
+        viewOffsetMs = viewOffsetMs.coerceIn(0f, maxOffset)
     }
 
     override fun computeScroll() {
@@ -172,8 +176,10 @@ class SpectrogramView @JvmOverloads constructor(
     fun setCursorPosition(pos: Float, currentMs: Int) {
         currentTimeMs = currentMs
         if (playbackMode && scroller.isFinished) {
+            // Auto-scroll logic: only shift window if cursor is not in the current view
             if (currentTimeMs < viewOffsetMs || currentTimeMs >= viewOffsetMs + WINDOW_SIZE_MS) {
                 viewOffsetMs = (currentTimeMs / WINDOW_SIZE_MS * WINDOW_SIZE_MS).toFloat()
+                clampViewOffset() // Apply new constraint
                 seekListener?.onOffsetChanged(viewOffsetMs)
             }
         }
@@ -183,7 +189,7 @@ class SpectrogramView @JvmOverloads constructor(
     fun clearPlaybackMode() {
         playbackMode = false
         pcmFilePath = null
-        lastRenderedOffsetMs = -1f
+        lastRenderedOffsetMs = -100000f
         totalDurationMs = 0
         currentTimeMs = 0
         viewOffsetMs = 0f
@@ -200,7 +206,6 @@ class SpectrogramView @JvmOverloads constructor(
         viewOffsetMs = 0f
         lastRenderedOffsetMs = -100000f
         
-        // Ensure offscreen bitmap is initialized
         synchronized(lock) {
             if (offscreen.width != MAX_COLUMNS || offscreen.height != freqBins) {
                 offscreen.recycle()
@@ -227,7 +232,10 @@ class SpectrogramView @JvmOverloads constructor(
             val bytesPerColumn = samplesPerColumn * 2
             
             FileInputStream(file).use { fis ->
-                fis.skip(startByte)
+                try {
+                    fis.skip(startByte)
+                } catch (e: Exception) { return@use }
+                
                 val byteBuffer = ByteArray(bytesPerColumn)
                 val shortBuffer = ShortArray(fftSize)
                 

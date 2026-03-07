@@ -195,7 +195,8 @@ class MainActivity : AppCompatActivity() {
         val pcmPath = RecordingManager.getAudioPath(this, name)
 
         isRecording = true; audioRecord?.startRecording()
-        btnRecord.text = "Stop"; tvStatus.text = "Recording... (${sr / 1000}kHz)"
+        btnRecord.text = "STOP"
+        tvStatus.text = "Recording... (${sr / 1000}kHz)"
 
         recordingThread = Thread({
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
@@ -234,7 +235,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopRecording() {
         isRecording = false; recordingThread?.join(1000); recordingThread = null
         audioRecord?.stop(); audioRecord?.release(); audioRecord = null
-        btnRecord.text = "Start"; tvStatus.text = "Stopped"; tvStatus.setTextColor(0xFFFFFFFF.toInt())
+        btnRecord.text = "RECORD"; tvStatus.text = "Stopped"; tvStatus.setTextColor(0xFFFFFFFF.toInt())
     }
 
     override fun onDestroy() {
