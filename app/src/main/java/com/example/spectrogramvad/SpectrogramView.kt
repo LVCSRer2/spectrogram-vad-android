@@ -23,8 +23,8 @@ class SpectrogramView @JvmOverloads constructor(
 
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x99FFFFFF.toInt()
-        textSize = 20f
+        color = Color.WHITE
+        textSize = 24f
     }
 
     private var dbFloor = -20.0
@@ -73,7 +73,6 @@ class SpectrogramView @JvmOverloads constructor(
         synchronized(lock) {
             fftSize = size
             freqBins = size / 2
-            // For live mode, we keep MAX_COLUMNS. For playback, we'll resize as needed.
             if (!playbackMode) {
                 offscreen.recycle()
                 offscreen = Bitmap.createBitmap(MAX_COLUMNS, freqBins, Bitmap.Config.ARGB_8888)
@@ -105,7 +104,7 @@ class SpectrogramView @JvmOverloads constructor(
         cursorPosition = 0f
         totalDurationMs = 0
         currentTimeMs = 0
-        setFftSize(fftSize) // Reset bitmap to MAX_COLUMNS
+        setFftSize(fftSize)
         clear()
     }
 
@@ -113,7 +112,6 @@ class SpectrogramView @JvmOverloads constructor(
         synchronized(lock) {
             playbackMode = true
             totalDurationMs = (totalSamples.toLong() * 1000 / sampleRate).toInt()
-            
             val totalColumns = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
             
             offscreen.recycle()
@@ -171,11 +169,11 @@ class SpectrogramView @JvmOverloads constructor(
         if (!playbackMode || totalDurationMs <= 0) return super.onTouchEvent(event)
         
         if (event.action == android.view.MotionEvent.ACTION_DOWN || event.action == android.view.MotionEvent.ACTION_MOVE) {
+            val labelMarginLeft = 100f
+            if (event.x < labelMarginLeft) return true
+
             val page = currentTimeMs / WINDOW_SIZE_MS
             val pageStartMs = page * WINDOW_SIZE_MS
-            
-            val labelMarginLeft = 80f
-            if (event.x < labelMarginLeft) return true
             
             val plotW = width - labelMarginLeft
             val xInPlot = event.x - labelMarginLeft
@@ -282,8 +280,9 @@ class SpectrogramView @JvmOverloads constructor(
 
         if (snapColumn == 0 && !snapWrapped && !playbackMode) return
 
-        val labelMarginLeft = 80f
-        val labelMarginBottom = 40f
+        // Space for labels
+        val labelMarginLeft = 100f
+        val labelMarginBottom = 60f
         val plotRect = Rect(labelMarginLeft.toInt(), 0, viewW, (viewH - labelMarginBottom).toInt())
         val plotW = plotRect.width()
         val plotH = plotRect.height()
@@ -313,23 +312,31 @@ class SpectrogramView @JvmOverloads constructor(
             for (i in 0..20 step 5) {
                 val tx = plotRect.left + (i.toFloat() / 20 * plotW)
                 val timeLabel = "${(pageStartMs / 1000) + i}s"
-                canvas.drawText(timeLabel, tx, viewH - 10f, labelPaint)
+                canvas.drawText(timeLabel, tx, viewH - 15f, labelPaint)
             }
-        } else if (!snapWrapped) {
-            val src = Rect(0, 0, snapColumn, bins)
-            val dst = Rect(plotRect.left, plotRect.top, plotRect.left + (snapColumn.toFloat() / MAX_COLUMNS * plotW).toInt(), plotRect.bottom)
-            canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
         } else {
-            val rightPart = MAX_COLUMNS - snapColumn
-            val leftW = (rightPart.toFloat() / MAX_COLUMNS * plotW).toInt()
-            
-            val src1 = Rect(snapColumn, 0, MAX_COLUMNS, bins)
-            val dst1 = Rect(plotRect.left, plotRect.top, plotRect.left + leftW, plotRect.bottom)
-            canvas.drawBitmap(offscreen, src1, dst1, bitmapPaint)
+            if (!snapWrapped) {
+                val src = Rect(0, 0, snapColumn, bins)
+                val dst = Rect(plotRect.left, plotRect.top, plotRect.left + (snapColumn.toFloat() / MAX_COLUMNS * plotW).toInt(), plotRect.bottom)
+                canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
+            } else {
+                val rightPart = MAX_COLUMNS - snapColumn
+                val leftW = (rightPart.toFloat() / MAX_COLUMNS * plotW).toInt()
+                
+                val src1 = Rect(snapColumn, 0, MAX_COLUMNS, bins)
+                val dst1 = Rect(plotRect.left, plotRect.top, plotRect.left + leftW, plotRect.bottom)
+                canvas.drawBitmap(offscreen, src1, dst1, bitmapPaint)
 
-            val src2 = Rect(0, 0, snapColumn, bins)
-            val dst2 = Rect(plotRect.left + leftW, plotRect.top, plotRect.right, plotRect.bottom)
-            canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint)
+                val src2 = Rect(0, 0, snapColumn, bins)
+                val dst2 = Rect(plotRect.left + leftW, plotRect.top, plotRect.right, plotRect.bottom)
+                canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint)
+            }
+
+            labelPaint.textAlign = Paint.Align.CENTER
+            for (i in 0..20 step 5) {
+                val tx = plotRect.left + (i.toFloat() / 20 * plotW)
+                canvas.drawText("${i}s", tx, viewH - 15f, labelPaint)
+            }
         }
 
         labelPaint.textAlign = Paint.Align.RIGHT
