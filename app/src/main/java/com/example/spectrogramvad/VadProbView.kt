@@ -27,7 +27,27 @@ class VadProbView @JvmOverloads constructor(
         textSize = 20f
     }
 
+    private var cursorPosition = 0f
+    private var playbackMode = false
+
+    fun setCursorPosition(pos: Float) {
+        cursorPosition = pos.coerceIn(0f, 1f)
+        postInvalidate()
+    }
+
+    fun clearPlaybackMode() {
+        playbackMode = false
+        cursorPosition = 0f
+        clear()
+    }
+
+    fun setPlaybackMode(enabled: Boolean) {
+        playbackMode = enabled
+        postInvalidate()
+    }
+
     fun addProb(prob: Float) {
+        if (playbackMode) return
         System.arraycopy(probBuffer, 1, probBuffer, 0, BAR_COUNT - 1)
         probBuffer[BAR_COUNT - 1] = prob
         postInvalidate()
@@ -67,6 +87,15 @@ class VadProbView @JvmOverloads constructor(
                 0x664CAF50.toInt()  // dim green = silence
             }
             canvas.drawRect(left, h - barH, right, h.toFloat(), barPaint)
+        }
+
+        if (playbackMode) {
+            val cursorX = cursorPosition * w
+            val cursorPaint = Paint().apply {
+                color = android.graphics.Color.WHITE
+                strokeWidth = 3f
+            }
+            canvas.drawLine(cursorX, 0f, cursorX, h.toFloat(), cursorPaint)
         }
 
         canvas.drawText("VAD", 4f, h - 4f, labelPaint)

@@ -76,7 +76,79 @@ class SpectrogramView @JvmOverloads constructor(
 
     fun getFftSize(): Int = fftSize
 
+    private var playbackMode = false
+    private var cursorPosition = 0f // 0.0 to 1.0
+
+    fun setCursorPosition(pos: Float) {
+        cursorPosition = pos.coerceIn(0f, 1f)
+        postInvalidate()
+    }
+
+    fun clearPlaybackMode() {
+        playbackMode = false
+        cursorPosition = 0f
+        clear()
+    }
+
+    /**
+     * Renders a full spectrogram from a PCM file into the offscreen bitmap.
+     * For simplicity, we just downsample/segment to fit MAX_COLUMNS.
+     */
+    fun setFullSpectrogramFromFile(path: String, totalSamples: Int) {
+        synchronized(lock) {
+            playbackMode = true
+            offscreen.eraseColor(Color.BLACK)
+            wrapped = false
+            currentColumn = 0
+            
+            val file = java.io.File(path)
+            if (!file.exists()) return
+
+            val samplesPerColumn = (totalSamples / MAX_COLUMNS).coerceAtLeast(fftSize)
+            val byteBuffer = ByteArray(samplesPerColumn * 2)
+            val shortBuffer = ShortArray(fftSize)
+            
+            java.io.FileInputStream(file).use { fis ->
+                for (col in 0 until MAX_COLUMNS) {
+                    val read = fis.read(byteBuffer)
+                    if (read <= 0) break
+                    
+                    // Use the first fftSize samples of this segment for this column
+                    for (i in 0 until fftSize) {
+                        val s = ((byteBuffer[i * 2].toInt() and 0xFF) or (byteBuffer[i * 2 + 1].toInt() shl 8)).toShort()
+                        shortBuffer[i] = s
+                    }
+                    
+                    // Compute FFT for this column
+                    val n = fftSize
+                    val bins = freqBins
+                    for (i in 0 until n) {
+                        fftReal[i] = shortBuffer[i].toDouble() * hannWindow[i]
+                        fftImag[i] = 0.0
+                    }
+                    fft(fftReal, fftImag, n)
+                    
+                    val floor = dbFloor
+                    val ceil = dbCeil
+                    val range = max(1.0, ceil - floor)
+
+                    for (k in 0 until bins) {
+                        val mag = sqrt(fftReal[k] * fftReal[k] + fftImag[k] * fftImag[k]) / n
+                        val db = 20.0 * log10(mag + 1e-10)
+                        val norm = ((db - floor) / range).coerceIn(0.0, 1.0)
+                        pixelRow[bins - 1 - k] = heatmapColor(norm)
+                    }
+                    
+                    offscreen.setPixels(pixelRow, 0, 1, col, 0, 1, bins)
+                    currentColumn++
+                }
+            }
+        }
+        postInvalidate()
+    }
+
     fun addSamples(samples: ShortArray, length: Int): Int {
+        if (playbackMode) return 0
         var columns = 0
         for (i in 0 until length) {
             sampleBuffer[sampleCount++] = samples[i]
@@ -89,6 +161,7 @@ class SpectrogramView @JvmOverloads constructor(
     }
 
     private fun processWindow(): Int {
+        if (playbackMode) return 0
         val n = fftSize
         val bins = freqBins
         for (i in 0 until n) {
@@ -168,11 +241,22 @@ class SpectrogramView @JvmOverloads constructor(
             bins = freqBins
         }
 
-        if (snapColumn == 0 && !snapWrapped) return
+        if (snapColumn == 0 && !snapWrapped && !playbackMode) return
 
         val dst = Rect(0, 0, viewW, viewH)
 
-        if (!snapWrapped) {
+        if (playbackMode) {
+            val src = Rect(0, 0, MAX_COLUMNS, bins)
+            canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
+            
+            // Draw cursor
+            val cursorX = cursorPosition * viewW
+            val cursorPaint = Paint().apply {
+                color = Color.WHITE
+                strokeWidth = 3f
+            }
+            canvas.drawLine(cursorX, 0f, cursorX, viewH.toFloat(), cursorPaint)
+        } else if (!snapWrapped) {
             val src = Rect(0, 0, snapColumn, bins)
             canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
         } else {

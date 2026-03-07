@@ -45,13 +45,66 @@
             android:gravity="end" />
 
         <ImageButton
-            android:id="@+id/btnSettings"
+            android:id="@+id/btnRecordings"
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:layout_marginStart="8dp"
+            android:src="@android:drawable/ic_menu_save"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Recordings"
+            android:tint="#FFAAAAAA" />
+
+        <ImageButton
+            android:id="@+id/btnSettings"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="4dp"
             android:src="@android:drawable/ic_menu_preferences"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:contentDescription="Settings"
+            android:tint="#FFAAAAAA" />
+    </LinearLayout>
+
+    <!-- Playback controls (initially hidden) -->
+    <LinearLayout
+        android:id="@+id/playbackLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical"
+        android:background="#FF1A1A2E"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/btnPlayPause"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:text="Play"
+            android:textSize="12sp"
+            android:minWidth="70dp" />
+
+        <SeekBar
+            android:id="@+id/playbackSeekBar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/tvPlaybackTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00/00:00"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:fontFamily="monospace" />
+        
+        <ImageButton
+            android:id="@+id/btnClosePlayback"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
             android:tint="#FFAAAAAA" />
     </LinearLayout>
 
