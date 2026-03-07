@@ -63,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private var audioTrack: AudioTrack? = null
     private var playbackThread: Thread? = null
     private var playbackAudioPath: String? = null
+    private var currentPlaybackName: String? = null // For highlighting in list
     private var pcmFileLength: Long = 0
     private var playbackPositionBytes: Long = 0
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -182,6 +183,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRecording() {
+        stopPlayback()
         val sr = currentSampleRate; val chunkSize = sileroVad.chunkSize
         val bufferSize = maxOf(AudioRecord.getMinBufferSize(sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), chunkSize * 2 * 4)
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
@@ -250,6 +252,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         stopRecording(); stopPlayback()
+        currentPlaybackName = recordingName
         playbackAudioPath = audioPath; pcmFileLength = audioFile.length()
         val durationMs = (pcmFileLength * 1000L / (currentSampleRate * 2)).toInt()
 
@@ -258,7 +261,6 @@ class MainActivity : AppCompatActivity() {
         updatePlaybackUI(0)
         btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
 
-        // Pre-calculate VAD data for playback
         val fullVAD = calculateFullVAD(audioFile)
         vadProbView.setFullVADData(fullVAD)
         vadProbView.setPlaybackMode(true)
@@ -281,12 +283,9 @@ class MainActivity : AppCompatActivity() {
                 val samplesPerBar = (WINDOW_SIZE_MS * sr / 1000) / MAX_COLUMNS
                 val byteBuffer = ByteArray(samplesPerBar * 2)
                 val floatBuffer = FloatArray(chunkSize)
-                
                 for (i in 0 until totalBars) {
                     val read = fis.read(byteBuffer)
                     if (read <= 0) break
-                    
-                    // Clear buffer
                     floatBuffer.fill(0f)
                     val samplesToProcess = minOf(chunkSize, samplesPerBar)
                     for (j in 0 until samplesToProcess) {
@@ -297,7 +296,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } catch (e: Exception) { e.printStackTrace() }
-        sileroVad.reset() // Reset state for future use
+        sileroVad.reset()
         return vadResults
     }
 
@@ -338,6 +337,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopPlayback() {
         pausePlayback(); playbackLayout.visibility = View.GONE; playbackAudioPath = null
+        currentPlaybackName = null
         playbackPositionBytes = 0; spectrogramView.clearPlaybackMode(); vadProbView.clearPlaybackMode()
     }
 
@@ -368,7 +368,7 @@ class MainActivity : AppCompatActivity() {
         val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt()
         val fraction = if (durationMs > 0) ms.toFloat() / durationMs else 0f
         spectrogramView.setCursorPosition(fraction, ms)
-        vadProbView.setCursorPosition(fraction)
+        vadProbView.setCursorPosition(ms)
     }
 
     private fun updatePlaybackUI(ms: Int) {
@@ -392,16 +392,37 @@ class MainActivity : AppCompatActivity() {
             override fun getItemId(position: Int): Long = position.toLong()
             override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup?): View {
                 val view = convertView ?: layoutInflater.inflate(R.layout.item_recording, parent, false)
-                view.findViewById<TextView>(R.id.recordingName).text = recordings[position]
+                val name = recordings[position]
+                val tv = view.findViewById<TextView>(R.id.recordingName)
+                tv.text = name
+                
+                // Highlight if currently playing
+                if (name == currentPlaybackName) {
+                    view.setBackgroundColor(0x44FFFFFF.toInt())
+                    tv.setTextColor(0xFFFF6B6B.toInt()) // Accent color
+                    tv.setTypeface(null, android.graphics.Typeface.BOLD)
+                } else {
+                    view.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    tv.setTextColor(android.graphics.Color.WHITE)
+                    tv.setTypeface(null, android.graphics.Typeface.NORMAL)
+                }
                 return view
             }
         }
         listView.adapter = adapter
         val dialog = AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Recordings").setView(dialogView).setNegativeButton("Close", null).create()
-        listView.setOnItemClickListener { _, _, position, _ -> dialog.dismiss(); enterPlaybackMode(recordings[position]) }
+        listView.setOnItemClickListener { _, _, position, _ -> 
+            val selected = recordings[position]
+            dialog.dismiss()
+            enterPlaybackMode(selected) 
+        }
         listView.setOnItemLongClickListener { _, _, position, _ ->
             val name = recordings[position]
-            AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Delete recording?").setMessage(name).setPositiveButton("Delete") { _, _ -> RecordingManager.deleteRecording(this, name); showRecordingsDialog() }.setNegativeButton("Cancel", null).show()
+            AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Delete recording?").setMessage(name).setPositiveButton("Delete") { _, _ -> 
+                if (name == currentPlaybackName) stopPlayback()
+                RecordingManager.deleteRecording(this, name)
+                showRecordingsDialog() 
+            }.setNegativeButton("Cancel", null).show()
             true
         }
         dialog.show()

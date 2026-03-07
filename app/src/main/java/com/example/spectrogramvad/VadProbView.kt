@@ -25,6 +25,7 @@ class VadProbView @JvmOverloads constructor(
     // Playback data
     private var playbackProbs: FloatArray? = null
     private var viewOffsetMs = 0f
+    private var currentTimeMs = 0
     private val WINDOW_SIZE_MS = 20000
 
     private val barPaint = Paint()
@@ -35,11 +36,10 @@ class VadProbView @JvmOverloads constructor(
         textSize = 20f
     }
 
-    private var cursorPosition = 0f
     private var playbackMode = false
 
-    fun setCursorPosition(pos: Float) {
-        cursorPosition = pos.coerceIn(0f, 1f)
+    fun setCursorPosition(currentMs: Int) {
+        this.currentTimeMs = currentMs
         postInvalidate()
     }
 
@@ -57,7 +57,7 @@ class VadProbView @JvmOverloads constructor(
         playbackMode = false
         playbackProbs = null
         viewOffsetMs = 0f
-        cursorPosition = 0f
+        currentTimeMs = 0
         clear()
     }
 
@@ -100,14 +100,15 @@ class VadProbView @JvmOverloads constructor(
         canvas.drawLine(labelMarginLeft, threshY, w.toFloat(), threshY, linePaint)
 
         if (playbackMode && playbackProbs != null) {
-            // Draw VAD from pre-calculated history based on viewOffsetMs
             val probs = playbackProbs!!
             val msPerBar = WINDOW_SIZE_MS.toFloat() / BAR_COUNT
+            
+            // startIdx based on visible window start
             val startIdx = (viewOffsetMs / msPerBar).toInt()
             
             for (i in 0 until BAR_COUNT) {
                 val dataIdx = startIdx + i
-                if (dataIdx >= probs.size) break
+                if (dataIdx < 0 || dataIdx >= probs.size) continue
                 
                 val prob = probs[dataIdx]
                 if (prob <= 0.001f) continue
@@ -120,13 +121,17 @@ class VadProbView @JvmOverloads constructor(
                 canvas.drawRect(left, h - barH, right, h.toFloat(), barPaint)
             }
             
-            // Draw cursor
-            val cursorX = labelMarginLeft + (cursorPosition * plotW)
-            val cursorPaint = Paint().apply { color = android.graphics.Color.WHITE; strokeWidth = 3f }
-            canvas.drawLine(cursorX, 0f, cursorX, h.toFloat(), cursorPaint)
+            // Cursor: Relative to the visible window (viewOffsetMs)
+            val cursorX = labelMarginLeft + ((currentTimeMs - viewOffsetMs).toFloat() / WINDOW_SIZE_MS * plotW)
+            if (cursorX >= labelMarginLeft && cursorX <= w) {
+                val cursorPaint = Paint().apply {
+                    color = android.graphics.Color.WHITE
+                    strokeWidth = 3f
+                }
+                canvas.drawLine(cursorX, 0f, cursorX, h.toFloat(), cursorPaint)
+            }
             
         } else if (!playbackMode) {
-            // Live Mode
             for (i in 0 until BAR_COUNT) {
                 val bufferIdx = if (!wrapped) {
                     if (i >= currentColumn) continue
