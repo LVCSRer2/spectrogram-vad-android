@@ -45,6 +45,13 @@ object RecordingManager {
         return File(File(getRecordingsRoot(context), name), "audio.pcm").absolutePath
     }
 
+    fun getDurationMs(context: Context, name: String, sampleRate: Int): Long {
+        val file = File(getAudioPath(context, name))
+        if (!file.exists()) return 0L
+        // PCM 16-bit Mono: 2 bytes per sample
+        return (file.length() * 1000L / (sampleRate * 2))
+    }
+
     fun deleteRecording(context: Context, name: String) {
         val dir = File(getRecordingsRoot(context), name)
         if (dir.exists() && dir.isDirectory) {

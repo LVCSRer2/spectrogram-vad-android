@@ -382,6 +382,18 @@ class MainActivity : AppCompatActivity() {
         return String.format("%02d:%02d", m, s)
     }
 
+    private fun formatTimeFull(ms: Int): String {
+        val totalSec = ms / 1000
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return if (h > 0) {
+            String.format("%02d:%02d:%02d", h, m, s)
+        } else {
+            String.format("%02d:%02d", m, s)
+        }
+    }
+
     private fun showRecordingsDialog() {
         val recordings = RecordingManager.listRecordings(this)
         if (recordings.isEmpty()) { Toast.makeText(this, "No recordings found", Toast.LENGTH_SHORT).show(); return }
@@ -394,18 +406,22 @@ class MainActivity : AppCompatActivity() {
             override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup?): View {
                 val view = convertView ?: layoutInflater.inflate(R.layout.item_recording, parent, false)
                 val name = recordings[position]
-                val tv = view.findViewById<TextView>(R.id.recordingName)
-                tv.text = name
+                val tvName = view.findViewById<TextView>(R.id.recordingName)
+                val tvDuration = view.findViewById<TextView>(R.id.recordingDuration)
+                
+                tvName.text = name
+                val durationMs = RecordingManager.getDurationMs(this@MainActivity, name, currentSampleRate)
+                tvDuration.text = "[${formatTimeFull(durationMs.toInt())}]"
                 
                 // Highlight if currently playing
                 if (name == currentPlaybackName) {
                     view.setBackgroundColor(0x44FFFFFF.toInt())
-                    tv.setTextColor(0xFFFF6B6B.toInt()) // Accent color
-                    tv.setTypeface(null, android.graphics.Typeface.BOLD)
+                    tvName.setTextColor(0xFFFF6B6B.toInt())
+                    tvName.setTypeface(null, android.graphics.Typeface.BOLD)
                 } else {
                     view.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                    tv.setTextColor(android.graphics.Color.WHITE)
-                    tv.setTypeface(null, android.graphics.Typeface.NORMAL)
+                    tvName.setTextColor(android.graphics.Color.WHITE)
+                    tvName.setTypeface(null, android.graphics.Typeface.NORMAL)
                 }
                 return view
             }
