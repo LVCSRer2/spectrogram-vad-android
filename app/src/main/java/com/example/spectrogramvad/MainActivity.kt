@@ -1,15 +1,23 @@
 package com.example.spectrogramvad
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.View
 import android.widget.BaseAdapter
 import android.widget.Button
@@ -35,6 +43,7 @@ import java.nio.ByteOrder
 class MainActivity : AppCompatActivity() {
 
     companion object {
+        private const val LOG_TAG = "MainActivity"
         private const val PERMISSION_REQUEST = 100
         private const val PREF_NAME = "spectrogram_vad_prefs"
         private const val PREF_FFT_SIZE = "fft_size"
@@ -49,6 +58,50 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPause: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvProb: TextView
+
+    // Bluetooth SCO
+    private lateinit var audioManager: AudioManager
+    private var bluetoothScoOn = false
+    private val scoReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
+            if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED) {
+                Log.i(LOG_TAG, "Bluetooth SCO connected")
+            } else if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED) {
+                Log.i(LOG_TAG, "Bluetooth SCO disconnected")
+            }
+        }
+    }
+
+    private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            for (device in addedDevices) {
+                if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                    Log.i(LOG_TAG, "BT SCO device added: ${device.productName}")
+                    startBluetoothMic()
+                    if (isRecording) {
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "Bluetooth Connected. Recording from Bluetooth.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            for (device in removedDevices) {
+                if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                    Log.i(LOG_TAG, "BT SCO device removed: ${device.productName}")
+                    stopBluetoothMic()
+                    if (isRecording) {
+                        runOnUiThread {
+                            Toast.makeText(this@MainActivity, "Bluetooth Disconnected. Recording from Phone Mic.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     private lateinit var playbackLayout: LinearLayout
     private lateinit var btnPlayPause: Button
@@ -79,6 +132,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         spectrogramView = findViewById(R.id.spectrogramView)
         vadProbView = findViewById(R.id.vadProbView)
@@ -135,6 +190,49 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (!sileroVad.init(this)) tvStatus.text = "VAD init failed"
+
+        registerReceiver(scoReceiver, IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED))
+        audioManager.registerAudioDeviceCallback(audioDeviceCallback, null)
+        startBluetoothMic()
+    }
+
+    private fun startBluetoothMic() {
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                val devices = audioManager.availableCommunicationDevices
+                for (device in devices) {
+                    if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                        audioManager.setCommunicationDevice(device)
+                        bluetoothScoOn = true
+                        return
+                    }
+                }
+            }
+            // Legacy path
+            if (audioManager.isBluetoothScoAvailableOffCall) {
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                audioManager.startBluetoothSco()
+                audioManager.isBluetoothScoOn = true
+                bluetoothScoOn = true
+            }
+        } catch (e: Exception) {
+            Log.e(LOG_TAG, "Bluetooth SCO error: ${e.message}")
+        }
+    }
+
+    private fun stopBluetoothMic() {
+        if (bluetoothScoOn) {
+            try {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    audioManager.clearCommunicationDevice()
+                } else {
+                    audioManager.isBluetoothScoOn = false
+                    audioManager.stopBluetoothSco()
+                    audioManager.mode = AudioManager.MODE_NORMAL
+                }
+            } catch (e: Exception) {}
+            bluetoothScoOn = false
+        }
     }
 
     private fun showSettingsDialog() {
@@ -191,8 +289,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermission(): Boolean {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST)
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 31) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        
+        val missing = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_REQUEST)
             return false
         }
         return true
@@ -200,7 +307,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) startRecording()
+        if (requestCode == PERMISSION_REQUEST && grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) startRecording()
     }
 
     private fun startRecording() {
@@ -244,7 +351,7 @@ class MainActivity : AppCompatActivity() {
                         val prob = sileroVad.infer(floatBuffer)
                         for (r in 0 until columns) {
                             vadProbView.addProb(prob)
-                            vadOutputStream.writeFloat(prob) // Pre-save VAD
+                            vadOutputStream.writeFloat(prob)
                         }
                         val isSpeech = prob >= 0.5f
                         runOnUiThread {
@@ -273,6 +380,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterReceiver(scoReceiver)
+        audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
+        stopBluetoothMic()
         stopRecording(); stopPlayback(); sileroVad.release()
     }
 
@@ -298,7 +408,6 @@ class MainActivity : AppCompatActivity() {
         updatePlaybackUI(0)
         btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
 
-        // Load VAD: Prefer cached file, fallback to background calc
         if (vadFile.exists()) {
             val cachedProbs = readVadFile(vadFile)
             vadProbView.setFullVADData(cachedProbs, durationMs)
@@ -306,7 +415,6 @@ class MainActivity : AppCompatActivity() {
             spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt())
             updateVisualizationCursor(0)
         } else {
-            // Background fallback for legacy files
             tvStatus.text = "Loading VAD..."
             Thread({
                 val calculatedProbs = calculateFullVAD(audioFile)
