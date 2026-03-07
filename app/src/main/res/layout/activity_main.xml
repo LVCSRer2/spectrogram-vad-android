@@ -180,14 +180,15 @@
                 android:layout_margin="8dp"
                 android:padding="4dp"
                 android:orientation="vertical"
-                android:background="#33000000">
+                android:background="#22000000"
+                android:alpha="0.6">
 
                 <TextView
                     android:id="@+id/tvRangeLabel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:text="Range: -20~80"
-                    android:textColor="#88FFFFFF"
+                    android:textColor="#FFFFFF"
                     android:textSize="10sp"
                     android:fontFamily="monospace"
                     android:gravity="center" />
@@ -200,9 +201,10 @@
                     android:valueTo="100"
                     android:stepSize="1"
                     app:values="@array/initial_range_values"
-                    app:thumbColor="#88FFFFFF"
-                    app:trackColorActive="#66FFFFFF"
-                    app:trackColorInactive="#22FFFFFF"
+                    app:thumbColor="#FFFFFF"
+                    app:trackColorActive="#FFFFFF"
+                    app:trackColorInactive="#44FFFFFF"
+                    app:trackHeight="2dp"
                     app:thumbRadius="6dp"
                     app:haloRadius="0dp"
                     app:haloColor="@android:color/transparent"
