@@ -122,6 +122,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private var currentSampleRate = 8000
     private var currentRecordingName: String? = null
     private var vadOutputStream: DataOutputStream? = null
+    private var latestProb: Float = 0f
 
     private var isPlaying = false
     private var audioTrack: AudioTrack? = null
@@ -166,6 +167,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         spectrogramView.setFftSize(prefs.getInt(PREF_FFT_SIZE, 256))
         currentSampleRate = prefs.getInt(PREF_SAMPLE_RATE, 8000)
         spectrogramView.sampleRate = currentSampleRate
+        vadProbView.setSampleRate(currentSampleRate)
 
         findViewById<ImageButton>(R.id.btnSettings).setOnClickListener { showSettingsDialog() }
         findViewById<ImageButton>(R.id.btnRecordings).setOnClickListener { showRecordingsDialog() }
@@ -174,6 +176,12 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
             override fun onSeek(ms: Int) { seekToMs(ms) }
             override fun onOffsetChanged(offsetMs: Float) { vadProbView.setViewOffsetMs(offsetMs) }
             override fun onZoomChanged(windowSizeMs: Int) { vadProbView.setWindowSizeMs(windowSizeMs) }
+            override fun onColumnAdded() {
+                try {
+                    vadProbView.addProb(latestProb)
+                    vadOutputStream?.writeFloat(latestProb)
+                } catch (e: Exception) {}
+            }
         })
 
         vadProbView.setOnSeekListener(object : VadProbView.SeekListener {
@@ -209,18 +217,9 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     }
 
     override fun onDataRead(buffer: ShortArray, read: Int, prob: Float) {
+        latestProb = prob
         runOnUiThread {
-            // Actual columns rendered by SpectrogramView
-            val actualCols = spectrogramView.addSamples(buffer, read)
-            
-            // Sync VAD recording with spectrogram columns
-            for (r in 0 until actualCols) {
-                vadProbView.addProb(prob)
-                try {
-                    vadOutputStream?.writeFloat(prob)
-                } catch (e: Exception) {}
-            }
-            
+            spectrogramView.addSamples(buffer, read)
             val isSpeech = prob >= 0.5f
             tvProb.text = String.format("%.2f", prob)
             tvStatus.text = if (isSpeech) "Speech" else "Recording..."
@@ -244,11 +243,8 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                 btnPause.visibility = View.GONE
                 tvStatus.text = "Stopped"
                 tvStatus.setTextColor(0xFFFFFFFF.toInt())
-                
-                // Close VAD stream
                 try { vadOutputStream?.flush(); vadOutputStream?.close() } catch (e: Exception) {}
                 vadOutputStream = null
-
                 if (wasRecording) {
                     currentRecordingName?.let { enterPlaybackMode(it) }
                 }
@@ -309,6 +305,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                     if (isRecording) stopRecording()
                     currentSampleRate = newRate
                     spectrogramView.sampleRate = newRate
+                    vadProbView.setSampleRate(newRate)
                     spectrogramView.clear(); vadProbView.clear()
                     getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit().putInt(PREF_SAMPLE_RATE, newRate).apply()
                 }
@@ -351,25 +348,18 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
         val pcmPath = RecordingManager.getAudioPath(this, name)
         val vadPath = RecordingManager.getVadPath(this, name)
-        
-        try {
-            vadOutputStream = DataOutputStream(FileOutputStream(vadPath))
-        } catch (e: Exception) { e.printStackTrace() }
-
+        try { vadOutputStream = DataOutputStream(FileOutputStream(vadPath)) } catch (e: Exception) { e.printStackTrace() }
         recordingService?.startRecording(currentSampleRate, pcmPath)
     }
 
-    private fun stopRecording() {
-        recordingService?.stopRecording()
-    }
+    private fun stopRecording() { recordingService?.stopRecording() }
 
     override fun onDestroy() {
         super.onDestroy()
         if (isBound) { unbindService(connection); isBound = false }
         try { unregisterReceiver(scoReceiver) } catch (e: Exception) {}
         audioManager.unregisterAudioDeviceCallback(audioDeviceCallback)
-        stopBluetoothMic()
-        stopPlayback()
+        stopBluetoothMic(); stopPlayback()
     }
 
     // --- Playback ---
@@ -383,10 +373,8 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         currentPlaybackName = recordingName
         playbackAudioPath = audioPath; pcmFileLength = audioFile.length()
         val durationMs = (pcmFileLength * 1000L / (currentSampleRate * 2)).toInt()
-        playbackLayout.visibility = View.VISIBLE
-        playbackSeekBar.max = durationMs; playbackSeekBar.progress = 0
-        updatePlaybackUI(0)
-        btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
+        playbackLayout.visibility = View.VISIBLE; playbackSeekBar.max = durationMs; playbackSeekBar.progress = 0
+        updatePlaybackUI(0); btnPlayPause.text = "Play"; playbackPositionBytes = 0; isPlaying = false
 
         if (vadFile.exists()) {
             val cachedProbs = readVadFile(vadFile)
@@ -402,8 +390,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                     vadProbView.setFullVADData(calculatedProbs, durationMs)
                     vadProbView.setPlaybackMode(true)
                     spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt())
-                    updateVisualizationCursor(0)
-                    tvStatus.text = "Ready"
+                    updateVisualizationCursor(0); tvStatus.text = "Ready"
                 }
             }, "VadCalcThread").start()
         }
@@ -416,19 +403,18 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     }
 
     private fun calculateFullVAD(file: File): FloatArray {
-        val sr = currentSampleRate; val WINDOW_SIZE_MS = 20000; val MAX_COLUMNS = 300
-        val totalDurationMs = (file.length() * 1000 / (sr * 2)).toInt()
-        val totalBars = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
+        val sr = currentSampleRate; val SAMPLES_PER_COL = SpectrogramView.SAMPLES_PER_COL
+        val totalSamples = (file.length() / 2).toInt()
+        val totalBars = totalSamples / SAMPLES_PER_COL
         val vadResults = FloatArray(totalBars)
         val tempVad = SileroVad().apply { init(this@MainActivity); setSampleRate(sr) }
         try {
             FileInputStream(file).use { fis ->
-                val samplesPerBar = (WINDOW_SIZE_MS * sr / 1000) / MAX_COLUMNS
-                val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
+                val byteBuffer = ByteArray(SAMPLES_PER_COL * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
                 for (i in 0 until totalBars) {
                     val read = fis.read(byteBuffer); if (read <= 0) break
                     floatBuffer.fill(0f)
-                    val samplesToProcess = minOf(tempVad.chunkSize, samplesPerBar)
+                    val samplesToProcess = minOf(tempVad.chunkSize, SAMPLES_PER_COL)
                     for (j in 0 until samplesToProcess) {
                         val s = ((byteBuffer[j * 2].toInt() and 0xFF) or (byteBuffer[j * 2 + 1].toInt() shl 8)).toShort()
                         floatBuffer[j] = (s / 32768.0f).coerceIn(-1f, 1f)
@@ -443,8 +429,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private fun resumePlayback() {
         val path = playbackAudioPath ?: return
         if (isPlaying) return
-        val sr = currentSampleRate
-        val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val sr = currentSampleRate; val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         audioTrack = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
             .setBufferSizeInBytes(bufSize).setTransferMode(AudioTrack.MODE_STREAM).build()
@@ -476,8 +461,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     }
 
     private fun stopPlayback() {
-        pausePlayback(); playbackLayout.visibility = View.GONE; playbackAudioPath = null
-        currentPlaybackName = null
+        pausePlayback(); playbackLayout.visibility = View.GONE; playbackAudioPath = null; currentPlaybackName = null
         playbackPositionBytes = 0; spectrogramView.clearPlaybackMode(); vadProbView.clearPlaybackMode()
     }
 
@@ -494,8 +478,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
             override fun run() {
                 if (isPlaying) {
                     val ms = (playbackPositionBytes * 1000 / (currentSampleRate * 2)).toInt()
-                    updatePlaybackUI(ms); updateVisualizationCursor(ms)
-                    uiHandler.postDelayed(this, 50)
+                    updatePlaybackUI(ms); updateVisualizationCursor(ms); uiHandler.postDelayed(this, 50)
                 }
             }
         }
@@ -507,8 +490,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private fun updateVisualizationCursor(ms: Int) {
         val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt()
         val fraction = if (durationMs > 0) ms.toFloat() / durationMs else 0f
-        spectrogramView.setCursorPosition(fraction, ms)
-        vadProbView.setCursorPosition(ms)
+        spectrogramView.setCursorPosition(fraction, ms); vadProbView.setCursorPosition(ms)
     }
 
     private fun updatePlaybackUI(ms: Int) {
@@ -516,10 +498,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         playbackSeekBar.progress = ms; tvPlaybackTime.text = "${formatTime(ms)}/${formatTime(durationMs)}"
     }
 
-    private fun formatTime(ms: Int): String {
-        val totalSec = ms / 1000; val m = totalSec / 60; val s = totalSec % 60
-        return String.format("%02d:%02d", m, s)
-    }
+    private fun formatTime(ms: Int): String { val totalSec = ms / 1000; val m = totalSec / 60; val s = totalSec % 60; return String.format("%02d:%02d", m, s) }
 
     private fun formatTimeFull(ms: Int): String {
         val totalSec = ms / 1000; val h = totalSec / 3600; val m = (totalSec % 3600) / 60; val s = totalSec % 60
@@ -540,18 +519,9 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                 val name = recordings[position]
                 val tvName = view.findViewById<TextView>(R.id.recordingName)
                 val tvDuration = view.findViewById<TextView>(R.id.recordingDuration)
-                tvName.text = name
-                val durationMs = RecordingManager.getDurationMs(this@MainActivity, name, currentSampleRate)
+                tvName.text = name; val durationMs = RecordingManager.getDurationMs(this@MainActivity, name, currentSampleRate)
                 tvDuration.text = "[${formatTimeFull(durationMs.toInt())}]"
-                if (name == currentPlaybackName) {
-                    view.setBackgroundColor(0x44FFFFFF.toInt())
-                    tvName.setTextColor(0xFFFF6B6B.toInt())
-                    tvName.setTypeface(null, android.graphics.Typeface.BOLD)
-                } else {
-                    view.setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                    tvName.setTextColor(android.graphics.Color.WHITE)
-                    tvName.setTypeface(null, android.graphics.Typeface.NORMAL)
-                }
+                if (name == currentPlaybackName) { view.setBackgroundColor(0x44FFFFFF.toInt()); tvName.setTextColor(0xFFFF6B6B.toInt()); tvName.setTypeface(null, android.graphics.Typeface.BOLD) } else { view.setBackgroundColor(android.graphics.Color.TRANSPARENT); tvName.setTextColor(android.graphics.Color.WHITE); tvName.setTypeface(null, android.graphics.Typeface.NORMAL) }
                 return view
             }
         }
