@@ -116,6 +116,12 @@ class MainActivity : AppCompatActivity() {
             showRecordingsDialog()
         }
 
+        spectrogramView.setOnSeekListener(object : SpectrogramView.SeekListener {
+            override fun onSeek(ms: Int) {
+                seekToMs(ms)
+            }
+        })
+
         btnRecord.setOnClickListener {
             if (isRecording) {
                 stopRecording()
@@ -388,7 +394,7 @@ class MainActivity : AppCompatActivity() {
         // Load full spectrogram
         val totalSamples = (pcmFileLength / 2).toInt()
         spectrogramView.setFullSpectrogramFromFile(audioPath, totalSamples)
-        spectrogramView.setCursorPosition(0f)
+        spectrogramView.setCursorPosition(0f, 0)
         vadProbView.setCursorPosition(0f)
     }
 
@@ -517,7 +523,7 @@ class MainActivity : AppCompatActivity() {
     private fun updateVisualizationCursor(ms: Int) {
         val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt()
         val fraction = if (durationMs > 0) ms.toFloat() / durationMs else 0f
-        spectrogramView.setCursorPosition(fraction)
+        spectrogramView.setCursorPosition(fraction, ms)
         vadProbView.setCursorPosition(fraction)
     }
 

@@ -31,6 +31,14 @@ class SpectrogramView @JvmOverloads constructor(
     private var dbCeil = 80.0
     var sampleRate = 8000
 
+    interface SeekListener {
+        fun onSeek(ms: Int)
+    }
+    private var seekListener: SeekListener? = null
+    fun setOnSeekListener(listener: SeekListener) {
+        seekListener = listener
+    }
+
     // Dynamic FFT state
     private var fftSize = 256
     private var freqBins = fftSize / 2
@@ -42,13 +50,20 @@ class SpectrogramView @JvmOverloads constructor(
     private var currentColumn = 0
     private var wrapped = false
 
-    private var sampleBuffer = ShortArray(fftSize)
+    private var sampleBuffer = ShortArray(2048) // Max FFT size
     private var sampleCount = 0
     private var windowCounter = 0
 
-    private var fftReal = DoubleArray(fftSize)
-    private var fftImag = DoubleArray(fftSize)
-    private var hannWindow = makeHannWindow(fftSize)
+    private var fftReal = DoubleArray(2048)
+    private var fftImag = DoubleArray(2048)
+    private var hannWindow = makeHannWindow(256)
+
+    // Playback and Paging state
+    private var playbackMode = false
+    private var cursorPosition = 0f // 0.0 to 1.0
+    private var totalDurationMs = 0
+    private var currentTimeMs = 0
+    private val WINDOW_SIZE_MS = 20000 // 20 seconds
 
     private fun makeHannWindow(n: Int) = DoubleArray(n) { i ->
         0.5 * (1.0 - cos(2.0 * PI * i / (n - 1)))
@@ -58,9 +73,14 @@ class SpectrogramView @JvmOverloads constructor(
         synchronized(lock) {
             fftSize = size
             freqBins = size / 2
-            offscreen.recycle()
-            offscreen = Bitmap.createBitmap(MAX_COLUMNS, freqBins, Bitmap.Config.ARGB_8888)
-            offscreen.eraseColor(Color.BLACK)
+            // For live mode, we keep MAX_COLUMNS. For playback, we'll resize as needed.
+            if (!playbackMode) {
+                offscreen.recycle()
+                offscreen = Bitmap.createBitmap(MAX_COLUMNS, freqBins, Bitmap.Config.ARGB_8888)
+                offscreen.eraseColor(Color.BLACK)
+                currentColumn = 0
+                wrapped = false
+            }
             pixelRow = IntArray(freqBins)
             sampleBuffer = ShortArray(fftSize)
             sampleCount = 0
@@ -68,35 +88,36 @@ class SpectrogramView @JvmOverloads constructor(
             fftImag = DoubleArray(fftSize)
             hannWindow = makeHannWindow(fftSize)
             windowCounter = 0
-            currentColumn = 0
-            wrapped = false
         }
         postInvalidate()
     }
 
     fun getFftSize(): Int = fftSize
 
-    private var playbackMode = false
-    private var cursorPosition = 0f // 0.0 to 1.0
-
-    fun setCursorPosition(pos: Float) {
+    fun setCursorPosition(pos: Float, currentMs: Int) {
         cursorPosition = pos.coerceIn(0f, 1f)
+        currentTimeMs = currentMs
         postInvalidate()
     }
 
     fun clearPlaybackMode() {
         playbackMode = false
         cursorPosition = 0f
+        totalDurationMs = 0
+        currentTimeMs = 0
+        setFftSize(fftSize) // Reset bitmap to MAX_COLUMNS
         clear()
     }
 
-    /**
-     * Renders a full spectrogram from a PCM file into the offscreen bitmap.
-     * For simplicity, we just downsample/segment to fit MAX_COLUMNS.
-     */
     fun setFullSpectrogramFromFile(path: String, totalSamples: Int) {
         synchronized(lock) {
             playbackMode = true
+            totalDurationMs = (totalSamples.toLong() * 1000 / sampleRate).toInt()
+            
+            val totalColumns = (totalDurationMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt().coerceAtLeast(1)
+            
+            offscreen.recycle()
+            offscreen = Bitmap.createBitmap(totalColumns, freqBins, Bitmap.Config.ARGB_8888)
             offscreen.eraseColor(Color.BLACK)
             wrapped = false
             currentColumn = 0
@@ -104,22 +125,22 @@ class SpectrogramView @JvmOverloads constructor(
             val file = java.io.File(path)
             if (!file.exists()) return
 
-            val samplesPerColumn = (totalSamples / MAX_COLUMNS).coerceAtLeast(fftSize)
+            val samplesPerColumn = (totalSamples.toDouble() / totalColumns).toInt().coerceAtLeast(1)
             val byteBuffer = ByteArray(samplesPerColumn * 2)
             val shortBuffer = ShortArray(fftSize)
             
             java.io.FileInputStream(file).use { fis ->
-                for (col in 0 until MAX_COLUMNS) {
+                for (col in 0 until totalColumns) {
                     val read = fis.read(byteBuffer)
                     if (read <= 0) break
                     
-                    // Use the first fftSize samples of this segment for this column
-                    for (i in 0 until fftSize) {
+                    val samplesToProcess = minOf(fftSize, samplesPerColumn)
+                    for (i in 0 until samplesToProcess) {
                         val s = ((byteBuffer[i * 2].toInt() and 0xFF) or (byteBuffer[i * 2 + 1].toInt() shl 8)).toShort()
                         shortBuffer[i] = s
                     }
-                    
-                    // Compute FFT for this column
+                    for (i in samplesToProcess until fftSize) shortBuffer[i] = 0
+
                     val n = fftSize
                     val bins = freqBins
                     for (i in 0 until n) {
@@ -140,11 +161,31 @@ class SpectrogramView @JvmOverloads constructor(
                     }
                     
                     offscreen.setPixels(pixelRow, 0, 1, col, 0, 1, bins)
-                    currentColumn++
                 }
             }
         }
         postInvalidate()
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (!playbackMode || totalDurationMs <= 0) return super.onTouchEvent(event)
+        
+        if (event.action == android.view.MotionEvent.ACTION_DOWN || event.action == android.view.MotionEvent.ACTION_MOVE) {
+            val page = currentTimeMs / WINDOW_SIZE_MS
+            val pageStartMs = page * WINDOW_SIZE_MS
+            
+            val labelMarginLeft = 80f
+            if (event.x < labelMarginLeft) return true
+            
+            val plotW = width - labelMarginLeft
+            val xInPlot = event.x - labelMarginLeft
+            val xFraction = (xInPlot / plotW).coerceIn(0f, 1f)
+            
+            val seekMs = pageStartMs + (xFraction * WINDOW_SIZE_MS).toInt()
+            seekListener?.onSeek(seekMs.coerceIn(0, totalDurationMs))
+            return true
+        }
+        return true
     }
 
     fun addSamples(samples: ShortArray, length: Int): Int {
@@ -165,7 +206,7 @@ class SpectrogramView @JvmOverloads constructor(
         val n = fftSize
         val bins = freqBins
         for (i in 0 until n) {
-            fftReal[i] = sampleBuffer[i] * hannWindow[i]
+            fftReal[i] = sampleBuffer[i].toDouble() * hannWindow[i]
             fftImag[i] = 0.0
         }
 
@@ -185,7 +226,6 @@ class SpectrogramView @JvmOverloads constructor(
         var columnsAdded = 0
 
         if (fftSize < COLUMN_STEP) {
-            // Small FFT: emit one column every COLUMN_STEP/fftSize windows
             windowCounter++
             if (windowCounter >= COLUMN_STEP / fftSize) {
                 windowCounter = 0
@@ -197,7 +237,6 @@ class SpectrogramView @JvmOverloads constructor(
                 columnsAdded = 1
             }
         } else {
-            // Large FFT: emit fftSize/COLUMN_STEP columns per window
             val count = fftSize / COLUMN_STEP
             synchronized(lock) {
                 for (c in 0 until count) {
@@ -243,41 +282,63 @@ class SpectrogramView @JvmOverloads constructor(
 
         if (snapColumn == 0 && !snapWrapped && !playbackMode) return
 
-        val dst = Rect(0, 0, viewW, viewH)
+        val labelMarginLeft = 80f
+        val labelMarginBottom = 40f
+        val plotRect = Rect(labelMarginLeft.toInt(), 0, viewW, (viewH - labelMarginBottom).toInt())
+        val plotW = plotRect.width()
+        val plotH = plotRect.height()
 
         if (playbackMode) {
-            val src = Rect(0, 0, MAX_COLUMNS, bins)
+            val page = currentTimeMs / WINDOW_SIZE_MS
+            val pageStartMs = page * WINDOW_SIZE_MS
+            
+            val totalColumns = offscreen.width
+            val startCol = (pageStartMs.toLong() * MAX_COLUMNS / WINDOW_SIZE_MS).toInt()
+            val endCol = startCol + MAX_COLUMNS
+            
+            val src = Rect(startCol, 0, minOf(endCol, totalColumns), bins)
+            val segmentW = (src.width().toFloat() / MAX_COLUMNS * plotW).toInt()
+            val dst = Rect(plotRect.left, plotRect.top, plotRect.left + segmentW, plotRect.bottom)
             canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
             
-            // Draw cursor
-            val cursorX = cursorPosition * viewW
+            val cursorMsInPage = currentTimeMs - pageStartMs
+            val cursorX = plotRect.left + (cursorMsInPage.toFloat() / WINDOW_SIZE_MS * plotW)
             val cursorPaint = Paint().apply {
                 color = Color.WHITE
                 strokeWidth = 3f
             }
-            canvas.drawLine(cursorX, 0f, cursorX, viewH.toFloat(), cursorPaint)
+            canvas.drawLine(cursorX, plotRect.top.toFloat(), cursorX, plotRect.bottom.toFloat(), cursorPaint)
+
+            labelPaint.textAlign = Paint.Align.CENTER
+            for (i in 0..20 step 5) {
+                val tx = plotRect.left + (i.toFloat() / 20 * plotW)
+                val timeLabel = "${(pageStartMs / 1000) + i}s"
+                canvas.drawText(timeLabel, tx, viewH - 10f, labelPaint)
+            }
         } else if (!snapWrapped) {
             val src = Rect(0, 0, snapColumn, bins)
+            val dst = Rect(plotRect.left, plotRect.top, plotRect.left + (snapColumn.toFloat() / MAX_COLUMNS * plotW).toInt(), plotRect.bottom)
             canvas.drawBitmap(offscreen, src, dst, bitmapPaint)
         } else {
             val rightPart = MAX_COLUMNS - snapColumn
-            val leftW = (rightPart.toLong() * viewW / MAX_COLUMNS).toInt()
-            if (rightPart > 0) {
-                val src1 = Rect(snapColumn, 0, MAX_COLUMNS, bins)
-                val dst1 = Rect(0, 0, leftW, viewH)
-                canvas.drawBitmap(offscreen, src1, dst1, bitmapPaint)
-            }
-            if (snapColumn > 0) {
-                val src2 = Rect(0, 0, snapColumn, bins)
-                val dst2 = Rect(leftW, 0, viewW, viewH)
-                canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint)
-            }
+            val leftW = (rightPart.toFloat() / MAX_COLUMNS * plotW).toInt()
+            
+            val src1 = Rect(snapColumn, 0, MAX_COLUMNS, bins)
+            val dst1 = Rect(plotRect.left, plotRect.top, plotRect.left + leftW, plotRect.bottom)
+            canvas.drawBitmap(offscreen, src1, dst1, bitmapPaint)
+
+            val src2 = Rect(0, 0, snapColumn, bins)
+            val dst2 = Rect(plotRect.left + leftW, plotRect.top, plotRect.right, plotRect.bottom)
+            canvas.drawBitmap(offscreen, src2, dst2, bitmapPaint)
         }
 
-        // Frequency labels
+        labelPaint.textAlign = Paint.Align.RIGHT
         val freqMax = sampleRate / 2
-        canvas.drawText("${freqMax}Hz", 4f, labelPaint.textSize + 2f, labelPaint)
-        canvas.drawText("0Hz", 4f, viewH - 4f, labelPaint)
+        for (i in 0..4) {
+            val freq = freqMax * i / 4
+            val ty = plotRect.bottom - (i.toFloat() / 4 * plotH)
+            canvas.drawText("${freq}Hz", labelMarginLeft - 10f, ty + labelPaint.textSize / 3, labelPaint)
+        }
     }
 
     private fun fft(real: DoubleArray, imag: DoubleArray, n: Int) {
