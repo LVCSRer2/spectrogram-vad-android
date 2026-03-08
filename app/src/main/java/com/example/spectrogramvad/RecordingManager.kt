@@ -49,6 +49,13 @@ object RecordingManager {
         return File(File(getRecordingsRoot(context), name), "vad.bin").absolutePath
     }
 
+    fun renameRecording(context: Context, oldName: String, newName: String): Boolean {
+        val oldDir = File(getRecordingsRoot(context), oldName)
+        val newDir = File(getRecordingsRoot(context), newName)
+        if (newDir.exists()) return false // Prevent overwriting
+        return oldDir.renameTo(newDir)
+    }
+
     fun getDurationMs(context: Context, name: String, sampleRate: Int): Long {
         val file = File(getAudioPath(context, name))
         if (!file.exists()) return 0L

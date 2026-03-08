@@ -22,6 +22,7 @@ import android.util.Log
 import android.view.View
 import android.widget.BaseAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -111,8 +112,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
             updateUIFromServiceState()
         }
         override fun onServiceDisconnected(name: ComponentName?) {
-            recordingService = null
-            isBound = false
+            recordingService = null; isBound = false
         }
     }
 
@@ -175,7 +175,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
             val values = slider.values
             val floor = values[0]
             val ceil = values[1]
-            tvRangeLabel.text = String.format("Dynamic Range: %.0f ~ %.0f dB", floor, ceil)
+            tvRangeLabel.text = String.format("Range: %.0f ~ %.0f", floor, ceil)
             spectrogramView.setDbRange(floor.toDouble(), ceil.toDouble())
         }
 
@@ -275,16 +275,14 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                 for (device in devices) {
                     if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
                         audioManager.setCommunicationDevice(device)
-                        bluetoothScoOn = true
-                        return
+                        bluetoothScoOn = true; return
                     }
                 }
             }
             if (audioManager.isBluetoothScoAvailableOffCall) {
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
                 audioManager.startBluetoothSco()
-                audioManager.isBluetoothScoOn = true
-                bluetoothScoOn = true
+                audioManager.isBluetoothScoOn = true; bluetoothScoOn = true
             }
         } catch (e: Exception) { Log.e(LOG_TAG, "Bluetooth SCO error: ${e.message}") }
     }
@@ -319,9 +317,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
                 val newRate = SAMPLE_RATES[which]
                 if (newRate != currentSampleRate) {
                     if (isRecording) stopRecording()
-                    currentSampleRate = newRate
-                    spectrogramView.sampleRate = newRate
-                    vadProbView.setSampleRate(newRate)
+                    currentSampleRate = newRate; spectrogramView.sampleRate = newRate; vadProbView.setSampleRate(newRate)
                     spectrogramView.clear(); vadProbView.clear()
                     getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit().putInt(PREF_SAMPLE_RATE, newRate).apply()
                 }
@@ -347,8 +343,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         if (Build.VERSION.SDK_INT >= 33) permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         val missing = permissions.filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_REQUEST)
-            return false
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), PERMISSION_REQUEST); return false
         }
         return true
     }
@@ -359,11 +354,9 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     }
 
     private fun startRecording() {
-        stopPlayback()
-        spectrogramView.clear(); vadProbView.clear()
+        stopPlayback(); spectrogramView.clear(); vadProbView.clear()
         val name = RecordingManager.createRecordingDir(this); currentRecordingName = name
-        val pcmPath = RecordingManager.getAudioPath(this, name)
-        val vadPath = RecordingManager.getVadPath(this, name)
+        val pcmPath = RecordingManager.getAudioPath(this, name); val vadPath = RecordingManager.getVadPath(this, name)
         try { vadOutputStream = DataOutputStream(FileOutputStream(vadPath)) } catch (e: Exception) { e.printStackTrace() }
         recordingService?.startRecording(currentSampleRate, pcmPath)
     }
@@ -385,8 +378,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         val vadPath = RecordingManager.getVadPath(this, recordingName)
         val audioFile = File(audioPath); val vadFile = File(vadPath)
         if (!audioFile.exists()) { Toast.makeText(this, "Audio file not found", Toast.LENGTH_SHORT).show(); return }
-        stopRecording(); stopPlayback()
-        currentPlaybackName = recordingName
+        stopRecording(); stopPlayback(); currentPlaybackName = recordingName
         playbackAudioPath = audioPath; pcmFileLength = audioFile.length()
         val durationMs = (pcmFileLength * 1000L / (currentSampleRate * 2)).toInt()
         playbackLayout.visibility = View.VISIBLE; playbackSeekBar.max = durationMs; playbackSeekBar.progress = 0
@@ -394,19 +386,15 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
 
         if (vadFile.exists()) {
             val cachedProbs = readVadFile(vadFile)
-            vadProbView.setFullVADData(cachedProbs, durationMs)
-            vadProbView.setPlaybackMode(true)
-            spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt())
-            updateVisualizationCursor(0)
+            vadProbView.setFullVADData(cachedProbs, durationMs); vadProbView.setPlaybackMode(true)
+            spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt()); updateVisualizationCursor(0)
         } else {
             tvStatus.text = "Loading VAD..."
             Thread({
                 val calculatedProbs = calculateFullVAD(audioFile)
                 runOnUiThread {
-                    vadProbView.setFullVADData(calculatedProbs, durationMs)
-                    vadProbView.setPlaybackMode(true)
-                    spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt())
-                    updateVisualizationCursor(0); tvStatus.text = "Ready"
+                    vadProbView.setFullVADData(calculatedProbs, durationMs); vadProbView.setPlaybackMode(true)
+                    spectrogramView.setPlaybackFile(audioPath, (pcmFileLength / 2).toInt()); updateVisualizationCursor(0); tvStatus.text = "Ready"
                 }
             }, "VadCalcThread").start()
         }
@@ -420,18 +408,14 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
 
     private fun calculateFullVAD(file: File): FloatArray {
         val sr = currentSampleRate; val SAMPLES_PER_COL = SpectrogramView.SAMPLES_PER_COL
-        val totalSamples = (file.length() / 2).toInt()
-        val totalBars = totalSamples / SAMPLES_PER_COL
-        val vadResults = FloatArray(totalBars)
-        val tempVad = SileroVad().apply { init(this@MainActivity); setSampleRate(sr) }
+        val totalSamples = (file.length() / 2).toInt(); val totalBars = totalSamples / SAMPLES_PER_COL
+        val vadResults = FloatArray(totalBars); val tempVad = SileroVad().apply { init(this@MainActivity); setSampleRate(sr) }
         try {
             FileInputStream(file).use { fis ->
-                val samplesPerBar = SAMPLES_PER_COL
-                val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
+                val samplesPerBar = SAMPLES_PER_COL; val byteBuffer = ByteArray(samplesPerBar * 2); val floatBuffer = FloatArray(tempVad.chunkSize)
                 for (i in 0 until totalBars) {
                     val read = fis.read(byteBuffer); if (read <= 0) break
-                    floatBuffer.fill(0f)
-                    val samplesToProcess = minOf(tempVad.chunkSize, samplesPerBar)
+                    floatBuffer.fill(0f); val samplesToProcess = minOf(tempVad.chunkSize, samplesPerBar)
                     for (j in 0 until samplesToProcess) {
                         val s = ((byteBuffer[j * 2].toInt() and 0xFF) or (byteBuffer[j * 2 + 1].toInt() shl 8)).toShort()
                         floatBuffer[j] = (s / 32768.0f).coerceIn(-1f, 1f)
@@ -446,8 +430,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private fun resumePlayback() {
         val path = playbackAudioPath ?: return
         if (isPlaying) return
-        val sr = currentSampleRate
-        val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        val sr = currentSampleRate; val bufSize = AudioTrack.getMinBufferSize(sr, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         audioTrack = AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
             .setAudioFormat(AudioFormat.Builder().setSampleRate(sr).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
             .setBufferSizeInBytes(bufSize).setTransferMode(AudioTrack.MODE_STREAM).build()
@@ -455,11 +438,9 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         playbackThread = Thread({
             var fis: FileInputStream? = null
             try {
-                fis = FileInputStream(path); fis.skip(playbackPositionBytes)
-                val buffer = ByteArray(bufSize); var pos = playbackPositionBytes
+                fis = FileInputStream(path); fis.skip(playbackPositionBytes); val buffer = ByteArray(bufSize); var pos = playbackPositionBytes
                 while (isPlaying && pos < pcmFileLength) {
-                    val toRead = minOf(buffer.size.toLong(), pcmFileLength - pos).toInt()
-                    val read = fis.read(buffer, 0, toRead)
+                    val toRead = minOf(buffer.size.toLong(), pcmFileLength - pos).toInt(); val read = fis.read(buffer, 0, toRead)
                     if (read <= 0) break
                     val written = audioTrack?.write(buffer, 0, read) ?: 0
                     if (written > 0) { pos += written; playbackPositionBytes = pos }
@@ -485,8 +466,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
 
     private fun seekToMs(ms: Int) {
         val bytePos = (ms.toLong() * currentSampleRate * 2 / 1000) and -2L
-        playbackPositionBytes = bytePos.coerceIn(0L, pcmFileLength)
-        updatePlaybackUI(ms); updateVisualizationCursor(ms)
+        playbackPositionBytes = bytePos.coerceIn(0L, pcmFileLength); updatePlaybackUI(ms); updateVisualizationCursor(ms)
         if (isPlaying) { pausePlayback(); resumePlayback() }
     }
 
@@ -506,8 +486,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
     private fun stopPlaybackUpdater() { playbackUpdater?.let { uiHandler.removeCallbacks(it) }; playbackUpdater = null }
 
     private fun updateVisualizationCursor(ms: Int) {
-        val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt()
-        val fraction = if (durationMs > 0) ms.toFloat() / durationMs else 0f
+        val durationMs = (pcmFileLength * 1000 / (currentSampleRate * 2)).toInt(); val fraction = if (durationMs > 0) ms.toFloat() / durationMs else 0f
         spectrogramView.setCursorPosition(fraction, ms); vadProbView.setCursorPosition(ms)
     }
 
@@ -535,8 +514,7 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
             override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup?): View {
                 val view = convertView ?: layoutInflater.inflate(R.layout.item_recording, parent, false)
                 val name = recordings[position]
-                val tvName = view.findViewById<TextView>(R.id.recordingName)
-                val tvDuration = view.findViewById<TextView>(R.id.recordingDuration)
+                val tvName = view.findViewById<TextView>(R.id.recordingName); val tvDuration = view.findViewById<TextView>(R.id.recordingDuration)
                 tvName.text = name; val durationMs = RecordingManager.getDurationMs(this@MainActivity, name, currentSampleRate)
                 tvDuration.text = "[${formatTimeFull(durationMs.toInt())}]"
                 if (name == currentPlaybackName) { view.setBackgroundColor(0x44FFFFFF.toInt()); tvName.setTextColor(0xFFFF6B6B.toInt()); tvName.setTypeface(null, android.graphics.Typeface.BOLD) } else { view.setBackgroundColor(android.graphics.Color.TRANSPARENT); tvName.setTextColor(android.graphics.Color.WHITE); tvName.setTypeface(null, android.graphics.Typeface.NORMAL) }
@@ -548,9 +526,52 @@ class MainActivity : AppCompatActivity(), RecordingService.RecordingListener {
         listView.setOnItemClickListener { _, _, position, _ -> dialog.dismiss(); enterPlaybackMode(recordings[position]) }
         listView.setOnItemLongClickListener { _, _, position, _ ->
             val name = recordings[position]
-            AlertDialog.Builder(this, R.style.SettingsDialog).setTitle("Delete recording?").setMessage(name).setPositiveButton("Delete") { _, _ -> if (name == currentPlaybackName) stopPlayback(); RecordingManager.deleteRecording(this, name); showRecordingsDialog() }.setNegativeButton("Cancel", null).show()
+            MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
+                .setTitle("Select Action")
+                .setItems(arrayOf("Rename", "Delete")) { _, which ->
+                    if (which == 0) showRenameDialog(name)
+                    else {
+                        MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
+                            .setTitle("Delete recording?").setMessage(name)
+                            .setPositiveButton("Delete") { _, _ -> if (name == currentPlaybackName) stopPlayback(); RecordingManager.deleteRecording(this, name); showRecordingsDialog() }
+                            .setNegativeButton("Cancel", null).show()
+                    }
+                }.show()
             true
         }
         dialog.show()
+    }
+
+    private fun showRenameDialog(oldName: String) {
+        val input = EditText(this).apply {
+            setText(oldName)
+            setSelection(oldName.length)
+            setTextColor(android.graphics.Color.WHITE)
+            setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFFFF6B6B.toInt()))
+        }
+        val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            setMargins(48, 20, 48, 20)
+        }
+        val container = LinearLayout(this).apply { addView(input, lp) }
+
+        MaterialAlertDialogBuilder(this, R.style.SettingsDialog)
+            .setTitle("Rename Recording")
+            .setView(container)
+            .setPositiveButton("Rename") { _, _ ->
+                val newName = input.text.toString().trim()
+                if (newName.isNotEmpty() && newName != oldName) {
+                    if (RecordingManager.renameRecording(this, oldName, newName)) {
+                        if (oldName == currentPlaybackName) {
+                            currentPlaybackName = newName
+                            playbackAudioPath = RecordingManager.getAudioPath(this, newName)
+                        }
+                        showRecordingsDialog()
+                    } else {
+                        Toast.makeText(this, "Rename failed (duplicate name?)", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 }
