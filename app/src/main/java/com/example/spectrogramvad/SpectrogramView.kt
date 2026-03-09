@@ -14,6 +14,7 @@ import android.view.View
 import android.widget.OverScroller
 import java.io.File
 import java.io.FileInputStream
+import java.io.RandomAccessFile
 import java.util.concurrent.Executors
 import kotlin.math.*
 
@@ -55,7 +56,7 @@ class SpectrogramView @JvmOverloads constructor(
     private var offscreen = Bitmap.createBitmap(1024, freqBins, Bitmap.Config.ARGB_8888).apply {
         eraseColor(Color.BLACK)
     }
-    private var pixelRow = IntArray(freqBins) // Recovered variable
+    private var pixelRow = IntArray(freqBins)
     private val lock = Any()
     private var currentColumn = 0
     private var wrapped = false
@@ -191,7 +192,7 @@ class SpectrogramView @JvmOverloads constructor(
                 offscreen.eraseColor(Color.BLACK)
                 currentColumn = 0; wrapped = false; totalColumnsAdded = 0
             }
-            pixelRow = IntArray(freqBins) // Reset recovered variable
+            pixelRow = IntArray(freqBins)
             sampleBuffer = ShortArray(fftSize); sampleCount = 0
             fftReal = DoubleArray(fftSize); fftImag = DoubleArray(fftSize); hannWindow = makeHannWindow(fftSize); windowCounter = 0
         }
@@ -262,30 +263,40 @@ class SpectrogramView @JvmOverloads constructor(
             try {
                 val file = File(currentPath)
                 if (!file.exists()) return@execute
-                val bytesPerMs = currentSR * 2 / 1000.0
-                val startByte = (offsetMs * bytesPerMs).toLong() and -2L
-                val totalSamplesInWindow = (currentWinSize.toLong() * currentSR / 1000)
-                val samplesPerColumn = (totalSamplesInWindow / plotW).toInt().coerceAtLeast(1)
-                val bytesPerColumn = samplesPerColumn * 2
-                
+
                 val tempBitmap = Bitmap.createBitmap(plotW, currentBins, Bitmap.Config.ARGB_8888)
                 val row = IntArray(currentBins)
                 val real = DoubleArray(currentFFT)
                 val imag = DoubleArray(currentFFT)
                 val window = makeHannWindow(currentFFT)
                 
-                FileInputStream(file).use { fis ->
-                    fis.skip(startByte)
-                    val byteBuffer = ByteArray(bytesPerColumn)
+                val samplesInFile = file.length() / 2
+                
+                RandomAccessFile(file, "r").use { raf ->
+                    val byteBuffer = ByteArray(currentFFT * 2)
                     val shortBuffer = ShortArray(currentFFT)
+                    
                     for (col in 0 until plotW) {
-                        val read = fis.read(byteBuffer)
-                        if (read <= 0) break
-                        val samplesToProcess = minOf(currentFFT, samplesPerColumn)
-                        for (i in 0 until samplesToProcess) shortBuffer[i] = ((byteBuffer[i * 2].toInt() and 0xFF) or (byteBuffer[i * 2 + 1].toInt() shl 8)).toShort()
-                        for (i in samplesToProcess until currentFFT) shortBuffer[i] = 0
-                        for (i in 0 until currentFFT) { real[i] = shortBuffer[i].toDouble() * window[i]; imag[i] = 0.0 }
+                        // Calculate start sample for this column with floating point precision
+                        val colTimeMs = offsetMs + (col.toDouble() / plotW * currentWinSize)
+                        val startSample = (colTimeMs * currentSR / 1000.0).toLong()
+                        
+                        // Stop if we are too close to the end of file to read a full FFT window
+                        if (startSample + currentFFT > samplesInFile) break
+                        
+                        raf.seek(startSample * 2)
+                        raf.readFully(byteBuffer)
+                        
+                        for (i in 0 until currentFFT) {
+                            shortBuffer[i] = ((byteBuffer[i * 2].toInt() and 0xFF) or (byteBuffer[i * 2 + 1].toInt() shl 8)).toShort()
+                        }
+
+                        for (i in 0 until currentFFT) { 
+                            real[i] = shortBuffer[i].toDouble() * window[i]
+                            imag[i] = 0.0 
+                        }
                         fft(real, imag, currentFFT)
+                        
                         val range = max(1.0, ceil - floor)
                         for (k in 0 until currentBins) {
                             val mag = sqrt(real[k] * real[k] + imag[k] * imag[k]) / currentFFT
@@ -296,6 +307,7 @@ class SpectrogramView @JvmOverloads constructor(
                         tempBitmap.setPixels(row, 0, 1, col, 0, 1, currentBins)
                     }
                 }
+
                 synchronized(lock) {
                     offscreen.recycle()
                     offscreen = tempBitmap
@@ -303,7 +315,11 @@ class SpectrogramView @JvmOverloads constructor(
                     lastRenderedWindowMs = currentWinSize
                 }
                 postInvalidate()
-            } catch (e: Exception) { e.printStackTrace() } finally { isRendering = false }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                isRendering = false
+            }
         }
     }
 
@@ -339,7 +355,7 @@ class SpectrogramView @JvmOverloads constructor(
         for (k in 0 until bins) {
             val mag = sqrt(fftReal[k] * fftReal[k] + fftImag[k] * fftImag[k]) / n
             val db = 20.0 * log10(mag + 1e-10); val norm = ((db - floor) / range).coerceIn(0.0, 1.0)
-            pixelRow[bins - 1 - k] = heatmapColor(norm) // Using recovered pixelRow
+            pixelRow[bins - 1 - k] = heatmapColor(norm) 
         }
         val colsIn20s = (20000L * sampleRate / (1000L * SAMPLES_PER_COL)).toInt()
         if (fftSize < SAMPLES_PER_COL) {
